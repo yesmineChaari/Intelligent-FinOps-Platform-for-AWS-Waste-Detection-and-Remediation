@@ -1,0 +1,40 @@
+detection:
+  skipped_roles:
+    - backup
+    - dependent_secondary
+
+  zombie:
+    action: TERMINATE
+    stopped_days_threshold: 30
+
+
+  dependent_primary:
+    action: DOWNSIZE
+    window_days: 30
+    idle_p95_cpu_threshold: 10.0
+    idle_p95_ram_threshold: 20.0
+
+  bursty:
+    action: DOWNSIZE
+    window_days: 30
+    cv_threshold: 1.0
+    idle_p99_cpu_threshold: 40.0
+
+  steady:
+    idle:
+      action: STOP
+      window_days: 7
+      p95_cpu_threshold: 5.0
+      p95_ram_threshold: 10.0
+      max_cpu_threshold: 20.0
+
+    oversized:
+      action: DOWNSIZE
+      window_days: 14
+      p95_cpu_threshold: 20.0
+      p95_ram_threshold: 40.0
+
+sizing:
+  max_drop_steps: 2
+  ram_headroom_threshold: 80.0
+  cpu_safety_ceiling: 80.0
