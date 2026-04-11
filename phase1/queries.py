@@ -100,7 +100,7 @@ async def get_sizing_ladder(
         FROM pricing
         WHERE instance_family = $1
           AND region = $2
-          AND os = $3
+                    AND lower(os) = lower($3)
         ORDER BY ladder_rank ASC
     """, instance_family, region, os_type)
 
@@ -119,7 +119,7 @@ async def get_instance_price(
         FROM pricing
         WHERE instance_type = $1
           AND region = $2
-          AND os = $3
+                    AND lower(os) = lower($3)
         LIMIT 1
     """, instance_type, region, os_type)
     return float(row["price_per_hour"]) if row else None

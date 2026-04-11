@@ -12,8 +12,6 @@ from .queries import (
     get_instance_price,
 )
 from .sizing import calculate_recommended_type
-
-
 async def run_phase1(conn: asyncpg.Connection, rules: Rules) -> list[Phase1Result]:
     instances = await get_all_instances(conn)
     results = []
@@ -31,9 +29,9 @@ async def _process_instance(
     instance: dict,
     rules: Rules,
 ) -> Phase1Result:
-    role = instance["role"]
+    instance_role = instance["role"]
     region = instance.get("region", "us-east-1")
-    os_type = instance.get("os", "Linux")
+    os_type = instance.get("os", "linux")
     
     # 1. Global Zombie Check (Applies to all roles regardless of tagging)
     zombie = await is_zombie(conn, instance["instance_id"], rules.detection.zombie.stopped_days_threshold)
@@ -46,7 +44,7 @@ async def _process_instance(
         ) or 0.0
         return Phase1Result(
             instance_id=instance["instance_id"],
-            role=role,
+            role=instance_role,
             action=rules.detection.zombie.action,
             waste_type=WasteType.ZOMBIE,
             detection_window_days=rules.detection.zombie.stopped_days_threshold,
@@ -57,17 +55,17 @@ async def _process_instance(
         )
     
     # 2. Skip explicitly defined roles
-    if role in rules.detection.skipped_roles:
-        return _skip(instance["instance_id"], role)
+    if instance_role in rules.detection.skipped_roles:
+        return _skip(instance["instance_id"], instance_role)
     
     # 3. Role-based routing (detection logic), but preserve original DB role in output
-    if role == "dependent_primary":
-        return await _detect_dependent_primary(conn, instance, rules, role)
-    elif role == "bursty":
-        return await _detect_bursty(conn, instance, rules, role)
+    if instance_role == "dependent_primary":
+        return await _detect_dependent_primary(conn, instance, rules, instance_role)
+    elif instance_role == "bursty":
+        return await _detect_bursty(conn, instance, rules, instance_role)
     else:
         # Any other role (including literal "steady" or typos) goes through steady logic
-        return await _detect_steady(conn, instance, rules, role)
+        return await _detect_steady(conn, instance, rules, instance_role)
 
 
 def _skip(instance_id: str, role: str) -> Phase1Result:
@@ -94,7 +92,7 @@ async def _detect_dependent_primary(
         return _clean(instance_id, role, "No metric data available.")
 
     if metrics["p95_cpu"] < r.idle_p95_cpu_threshold and metrics["p95_ram"] < r.idle_p95_ram_threshold:
-        sizing = await _get_sizing(conn, instance_type, metrics["p95_cpu"], metrics["p95_ram"], rules)
+        sizing = await _get_sizing(conn, instance, metrics["p95_cpu"], metrics["p95_ram"], rules)
         return Phase1Result(
             instance_id=instance_id,
             role=role,
@@ -169,7 +167,7 @@ async def _detect_steady(
     instance_id, instance_type = instance["instance_id"], instance["instance_type"]
     last_metrics: dict | None = None
     region = instance.get("region", "us-east-1")
-    os_type = instance.get("os", "Linux")
+    os_type =instance.get("os", "linux")
 
     # ── Check 1: Idle ──────────────────────────────────────
     idle_metrics = await get_instance_metrics(conn, instance_id, r.idle.window_days)
@@ -207,7 +205,7 @@ async def _detect_steady(
         if (os_metrics["p95_cpu"] < r.oversized.p95_cpu_threshold and 
             os_metrics["p95_ram"] < r.oversized.p95_ram_threshold):
             
-            sizing = await _get_sizing(conn, instance_type, os_metrics["p95_cpu"], os_metrics["p95_ram"], rules)
+            sizing = await _get_sizing(conn, instance, os_metrics["p95_cpu"], os_metrics["p95_ram"], rules)
             return Phase1Result(
                 instance_id=instance_id,
                 role=role,

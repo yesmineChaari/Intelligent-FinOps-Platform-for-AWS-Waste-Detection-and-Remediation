@@ -15,6 +15,9 @@ def calculate_recommended_type(
     rules: SizingRules,
 ) -> Optional[dict]:
 
+    # Normalize potential Decimal values from the database to plain floats
+    current_ram_gb = float(current_ram_gb)
+
     actual_ram_gb_consumed = (observed_ram_pct / 100.0) * current_ram_gb
 
     # FIXED: Use 'ladder_rank' instead of 'size_rank'
@@ -37,7 +40,7 @@ def calculate_recommended_type(
 
         # FIXED: Use 'vcpu' instead of 'vcpus'
         candidate_vcpus = candidate["vcpu"]
-        candidate_ram_gb = candidate["ram_gb"]
+        candidate_ram_gb = float(candidate["ram_gb"])
         candidate_price = float(candidate["price_per_hour"])
 
         # ── CPU Projection ────────────────────────────────────────────────

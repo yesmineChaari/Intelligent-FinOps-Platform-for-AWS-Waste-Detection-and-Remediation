@@ -1,7 +1,7 @@
 detection:
   skipped_roles:
     - backup
-    - dependent_secondary
+    - dependant_secondary
 
   zombie:
     action: TERMINATE
