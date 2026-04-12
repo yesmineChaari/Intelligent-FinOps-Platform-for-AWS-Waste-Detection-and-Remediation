@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 .env
+.phase2_test_report_llm.txt
+.project_context_summary.txt

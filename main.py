@@ -16,6 +16,7 @@ import sys
 
 from phase1.loader import load_rules
 from phase1.detection import run_phase1
+from phase2 import run_phase2, persist_phase2_results
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -95,7 +96,20 @@ async def main():
         log.info("Phase 1 Output Payload (JSON):")
         print(json.dumps(output, indent=2, default=str))
 
-        return results
+        # ── Phase 2: Blast Radius and Guardrails ──
+        log.info("Phase 2 starting — blast radius and guardrail evaluation.")
+
+        phase2_results = await run_phase2(conn, results)
+
+        for r in phase2_results:
+            log.info(r.model_dump_json(exclude_none=True))
+
+        await persist_phase2_results(conn, phase2_results)
+        log.info(
+            f"Phase 2 complete. {len(phase2_results)} rows written to waste table."
+        )
+
+        return phase2_results
 
     finally:
         await conn.close()

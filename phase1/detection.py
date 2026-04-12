@@ -94,7 +94,7 @@ async def _detect_dependent_primary(
         return _clean(instance_id, role, "No metric data available.")
 
     if metrics["p95_cpu"] < r.idle_p95_cpu_threshold and metrics["p95_ram"] < r.idle_p95_ram_threshold:
-        sizing = await _get_sizing(conn, instance_type, metrics["p95_cpu"], metrics["p95_ram"], rules)
+        sizing = await _get_sizing(conn, instance, metrics["p95_cpu"], metrics["p95_ram"], rules)
         return Phase1Result(
             instance_id=instance_id,
             role=role,
@@ -139,7 +139,7 @@ async def _detect_bursty(
         )
 
     if metrics["p99_cpu"] < r.idle_p99_cpu_threshold:
-        sizing = await _get_sizing(conn, instance_type, metrics["p99_cpu"], metrics["p95_ram"], rules)
+        sizing = await _get_sizing(conn, instance, metrics["p99_cpu"], metrics["p95_ram"], rules)
         return Phase1Result(
             instance_id=instance_id,
             role="bursty",
@@ -207,7 +207,7 @@ async def _detect_steady(
         if (os_metrics["p95_cpu"] < r.oversized.p95_cpu_threshold and 
             os_metrics["p95_ram"] < r.oversized.p95_ram_threshold):
             
-            sizing = await _get_sizing(conn, instance_type, os_metrics["p95_cpu"], os_metrics["p95_ram"], rules)
+            sizing = await _get_sizing(conn, instance, os_metrics["p95_cpu"], os_metrics["p95_ram"], rules)
             return Phase1Result(
                 instance_id=instance_id,
                 role=role,
