@@ -16,7 +16,7 @@ async def persist_phase2_results(conn, results: list[Phase2Result]) -> None:
     for result in results:
         rows.append(
             {
-                "instance_id": result.instance_id,
+                "resource_id": result.resource_id,
                 "waste_type": result.waste_type.value if hasattr(result.waste_type, "value") else result.waste_type,
                 # Sentinel '0' means no detection window was used (e.g. zombie check).
                 # Cannot be NULL — waste table enforces NOT NULL on this column.

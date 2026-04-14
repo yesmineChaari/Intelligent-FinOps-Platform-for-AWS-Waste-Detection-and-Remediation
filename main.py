@@ -83,7 +83,7 @@ async def main():
         log.info(f"Phase 1 complete. {len(results)} instances flagged for potential action.")
         for r in results:
             log.info(
-                f"  [{r.role}] {r.instance_id} → {r.action.value} "
+                f"  [{r.role}] {r.resource_id} → {r.action.value} "
                 f"({r.waste_type.value}) | {r.detection_reason}"
             )
 

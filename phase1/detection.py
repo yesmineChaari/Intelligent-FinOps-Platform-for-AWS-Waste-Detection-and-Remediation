@@ -34,7 +34,7 @@ async def _process_instance(
     os_type = instance.get("os", "linux")
     
     # 1. Global Zombie Check (Applies to all roles regardless of tagging)
-    zombie = await is_zombie(conn, instance["instance_id"], rules.detection.zombie.stopped_days_threshold)
+    zombie = await is_zombie(conn, instance["resource_id"], rules.detection.zombie.stopped_days_threshold)
     if zombie:
         current_price = await get_instance_price(
             conn,
@@ -43,7 +43,8 @@ async def _process_instance(
             os_type,
         ) or 0.0
         return Phase1Result(
-            instance_id=instance["instance_id"],
+            resource_id=instance["resource_id"],
+            resource_name=instance["resource_name"],
             role=instance_role,
             action=rules.detection.zombie.action,
             waste_type=WasteType.ZOMBIE,
@@ -56,7 +57,7 @@ async def _process_instance(
     
     # 2. Skip explicitly defined roles
     if instance_role in rules.detection.skipped_roles:
-        return _skip(instance["instance_id"], instance_role)
+        return _skip(instance["resource_id"], instance["resource_name"], instance_role)
     
     # 3. Role-based routing (detection logic), but preserve original DB role in output
     if instance_role == "dependent_primary":
@@ -68,9 +69,10 @@ async def _process_instance(
         return await _detect_steady(conn, instance, rules, instance_role)
 
 
-def _skip(instance_id: str, role: str) -> Phase1Result:
+def _skip(resource_id: int, resource_name: str, role: str) -> Phase1Result:
     return Phase1Result(
-        instance_id=instance_id,
+        resource_id=resource_id,
+        resource_name=resource_name,
         role=role,
         action=WasteAction.SKIP,
         waste_type=WasteType.NONE,
@@ -85,16 +87,17 @@ async def _detect_dependent_primary(
     role: str,
 ) -> Phase1Result:
     r = rules.detection.dependent_primary
-    instance_id, instance_type = instance["instance_id"], instance["instance_type"]
+    resource_id, resource_name, instance_type = instance["resource_id"], instance["resource_name"], instance["instance_type"]
 
-    metrics = await get_instance_metrics(conn, instance_id, r.window_days)
+    metrics = await get_instance_metrics(conn, resource_id, r.window_days)
     if not metrics:
-        return _clean(instance_id, role, "No metric data available.")
+        return _clean(resource_id, resource_name, role, "No metric data available.")
 
     if metrics["p95_cpu"] < r.idle_p95_cpu_threshold and metrics["p95_ram"] < r.idle_p95_ram_threshold:
         sizing = await _get_sizing(conn, instance, metrics["p95_cpu"], metrics["p95_ram"], rules)
         return Phase1Result(
-            instance_id=instance_id,
+            resource_id=resource_id,
+            resource_name=resource_name,
             role=role,
             action=r.action, # Explicit DOWNSIZE
             waste_type=WasteType.IDLE,
@@ -108,7 +111,7 @@ async def _detect_dependent_primary(
             **(_flatten_sizing(sizing, instance_type, instance)),
         )
 
-    return _clean(instance_id, role, "Thresholds not met.", metrics)
+    return _clean(resource_id, resource_name, role, "Thresholds not met.", metrics)
 
 
 async def _detect_bursty(
@@ -118,16 +121,17 @@ async def _detect_bursty(
     role: str,
 ) -> Phase1Result:
     r = rules.detection.bursty
-    instance_id, instance_type = instance["instance_id"], instance["instance_type"]
+    resource_id, resource_name, instance_type = instance["resource_id"], instance["resource_name"], instance["instance_type"]
 
-    metrics = await get_instance_metrics(conn, instance_id, r.window_days)
+    metrics = await get_instance_metrics(conn, resource_id, r.window_days)
     if not metrics:
-        return _clean(instance_id, role, "No metric data available.")
+        return _clean(resource_id, resource_name, role, "No metric data available.")
 
     # Validation: Is it actually bursty? (The Cortez / Shen critique fix)
     if metrics["cv"] < r.cv_threshold:
         return Phase1Result(
-            instance_id=instance_id,
+            resource_id=resource_id,
+            resource_name=resource_name,
             role=role,
             action=WasteAction.CLEAN, # Let agent handle the tag inconsistency warning
             waste_type=WasteType.TAG_ERROR,
@@ -139,7 +143,8 @@ async def _detect_bursty(
     if metrics["p99_cpu"] < r.idle_p99_cpu_threshold:
         sizing = await _get_sizing(conn, instance, metrics["p99_cpu"], metrics["p95_ram"], rules)
         return Phase1Result(
-            instance_id=instance_id,
+            resource_id=resource_id,
+            resource_name=resource_name,
             role="bursty",
             action=r.action,
             waste_type=WasteType.OVERSIZED,
@@ -154,7 +159,7 @@ async def _detect_bursty(
             **(_flatten_sizing(sizing, instance_type, instance)),
         )
 
-    return _clean(instance_id, role, f"P99 CPU {metrics['p99_cpu']:.1f}% exceeded threshold.", metrics)
+    return _clean(resource_id, resource_name, role, f"P99 CPU {metrics['p99_cpu']:.1f}% exceeded threshold.", metrics)
 
 
 async def _detect_steady(
@@ -164,13 +169,13 @@ async def _detect_steady(
     role: str,
 ) -> Phase1Result:
     r = rules.detection.steady
-    instance_id, instance_type = instance["instance_id"], instance["instance_type"]
+    resource_id, resource_name, instance_type = instance["resource_id"], instance["resource_name"], instance["instance_type"]
     last_metrics: dict | None = None
     region = instance.get("region", "us-east-1")
-    os_type =instance.get("os", "linux")
+    os_type = instance.get("os", "linux")
 
     # ── Check 1: Idle ──────────────────────────────────────
-    idle_metrics = await get_instance_metrics(conn, instance_id, r.idle.window_days)
+    idle_metrics = await get_instance_metrics(conn, resource_id, r.idle.window_days)
     if idle_metrics:
         last_metrics = idle_metrics
         if (idle_metrics["p95_cpu"] < r.idle.p95_cpu_threshold and 
@@ -184,7 +189,8 @@ async def _detect_steady(
                 os_type,
             ) or 0.0
             return Phase1Result(
-                instance_id=instance_id,
+                resource_id=resource_id,
+                resource_name=resource_name,
                 role=role,
                 action=r.idle.action,
                 waste_type=WasteType.IDLE,
@@ -199,7 +205,7 @@ async def _detect_steady(
             )
 
     # ── Check 2: Oversized ───────────────────────────────
-    os_metrics = await get_instance_metrics(conn, instance_id, r.oversized.window_days)
+    os_metrics = await get_instance_metrics(conn, resource_id, r.oversized.window_days)
     if os_metrics:
         last_metrics = os_metrics
         if (os_metrics["p95_cpu"] < r.oversized.p95_cpu_threshold and 
@@ -207,7 +213,8 @@ async def _detect_steady(
             
             sizing = await _get_sizing(conn, instance, os_metrics["p95_cpu"], os_metrics["p95_ram"], rules)
             return Phase1Result(
-                instance_id=instance_id,
+                resource_id=resource_id,
+                resource_name=resource_name,
                 role=role,
                 action=r.oversized.action,
                 waste_type=WasteType.OVERSIZED,
@@ -218,14 +225,15 @@ async def _detect_steady(
                 **(_flatten_sizing(sizing, instance_type, instance)),
             )
 
-    return _clean(instance_id, role, "No waste pattern detected.", last_metrics)
+    return _clean(resource_id, resource_name, role, "No waste pattern detected.", last_metrics)
 
 
-def _clean(instance_id: str, role: str, reason: str, metrics: dict | None = None) -> Phase1Result:
+def _clean(resource_id: int, resource_name: str, role: str, reason: str, metrics: dict | None = None) -> Phase1Result:
     """Helper to generate clean results, optionally including computed metrics."""
     metrics = metrics or {}
     return Phase1Result(
-        instance_id=instance_id,
+        resource_id=resource_id,
+        resource_name=resource_name,
         role=role,
         action=WasteAction.CLEAN,
         waste_type=WasteType.NONE,

@@ -19,7 +19,8 @@ class WasteType(str, Enum):
     NONE = "none"
 
 class Phase1Result(BaseModel):
-    instance_id: str
+    resource_id: int
+    resource_name: str
     role: str
     action: WasteAction
     waste_type: WasteType

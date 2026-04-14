@@ -10,24 +10,26 @@ import asyncpg
 async def get_all_instances(conn: asyncpg.Connection) -> list[dict]:
     rows = await conn.fetch("""
         SELECT
-            instance_id,
-            instance_type,      
-            status,
-            launched_at,
-            role,
-            os,
-            region,
-            environment,
-            team
-        FROM resources
-        WHERE resource_type = 'ec2'
+            r.id              AS resource_id,
+            r.name            AS resource_name,
+            r.resource_type,
+            e.instance_type,
+            e.region,
+            e.status,
+            e.launched_at,
+            e.role::text      AS role,
+            e.environment,
+            e.team,
+            e.os::text        AS os
+        FROM ec2_instances e
+        JOIN resources r ON r.id = e.resource_id
     """)
     return [dict(r) for r in rows]
 
 
 async def get_instance_metrics(
     conn: asyncpg.Connection,
-    instance_id: str,
+    resource_id: int,
     window_days: int
 ) -> Optional[dict]:
     """
@@ -47,9 +49,9 @@ async def get_instance_metrics(
                 ELSE 0 
             END AS cv
         FROM ec2_metrics
-        WHERE instance_id = $1
+        WHERE resource_id = $1
           AND timestamp >= $2
-    """, instance_id, since)
+    """, resource_id, since)
 
     if row is None or row["p95_cpu"] is None:
         return None
@@ -65,17 +67,19 @@ async def get_instance_metrics(
 
 async def is_zombie(
     conn: asyncpg.Connection,
-    instance_id: str,
+    resource_id: int,
     stopped_days_threshold: int
 ) -> bool:
     """Zombie = stopped for more than N days. No CPU/Network logic needed."""
     since = datetime.now(timezone.utc) - timedelta(days=stopped_days_threshold)
 
     row = await conn.fetchrow("""
-        SELECT status, launched_at
-        FROM resources
-        WHERE instance_id = $1
-    """, instance_id)
+        SELECT
+            e.status,
+            e.launched_at
+        FROM ec2_instances e
+        WHERE e.resource_id = $1
+    """, resource_id)
 
     if row is None:
         return False

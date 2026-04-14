@@ -42,7 +42,8 @@ TYPE_E_ELIGIBLE_ROLES = frozenset({"steady", "bursty", "managed"})
 class Phase2Result(BaseModel):
     model_config = {"use_enum_values": True}
 
-    instance_id: str
+    resource_id: int
+    resource_name: str
     role: str
     waste_type: WasteType
     detection_window: int | None = None

@@ -28,24 +28,25 @@ logger = logging.getLogger(__name__)
 
 
 def _generate_terraform_block(
-    instance_id: str,
+    resource_id: int,
+    resource_name: str,
     action: Phase2Action,
     target_type: str | None = None,
 ) -> str | None:
     if action == Phase2Action.TERMINATE:
         return (
-            f"# FINOPS: TERMINATE {instance_id}\n"
-            f"# Run: terraform destroy -target=aws_instance.{instance_id}\n"
+            f"# FINOPS: TERMINATE {resource_name} (resource_id={resource_id})\n"
+            f"# Run: terraform destroy -target=aws_instance.{resource_name}\n"
             f"# Ensure no remaining dependants before applying."
         )
     if action == Phase2Action.STOP:
         return (
-            f"# FINOPS: STOP {instance_id}\n"
-            f"# Run: aws ec2 stop-instances --instance-ids {instance_id}"
+            f"# FINOPS: STOP {resource_name} (resource_id={resource_id})\n"
+            f"# Run: aws ec2 stop-instances --instance-ids {resource_name}"
         )
     if action == Phase2Action.DOWNSIZE and target_type:
         return (
-            f"# FINOPS: DOWNSIZE {instance_id} → {target_type}\n"
+            f"# FINOPS: DOWNSIZE {resource_name} (resource_id={resource_id}) → {target_type}\n"
             f"# In your Terraform resource block, change:\n"
             f'#   instance_type = "{target_type}"'
         )
@@ -74,7 +75,8 @@ def _make_result(
     fallback_terraform_block: str | None = None,
 ) -> Phase2Result:
     return Phase2Result(
-        instance_id=source.instance_id,
+        resource_id=source.resource_id,
+        resource_name=source.resource_name,
         role=source.role,
         waste_type=source.waste_type,
         detection_window=_get_phase2_metric(source, "detection_window", "detection_window_days"),
@@ -124,10 +126,10 @@ async def _step1(conn: asyncpg.Connection, result: Phase1Result) -> Phase2Result
     if result.role not in TYPE_E_ELIGIBLE_ROLES:
         return None
 
-    is_redundancy_target = await check_type_e_redundancy(conn, result.instance_id)
+    is_redundancy_target = await check_type_e_redundancy(conn, result.resource_id)
     if is_redundancy_target:
         logger.info(
-            f"[Phase2][Step1] {result.instance_id} is a TYPE_E redundancy target - overriding to NEEDS_REVIEW"
+            f"[Phase2][Step1] resource_id={result.resource_id} is a TYPE_E redundancy target - overriding to NEEDS_REVIEW"
         )
         return _make_result(
             source=result,
@@ -148,10 +150,10 @@ def _step3(
     pipeline_warning: bool = False,
 ) -> Phase2Result:
     final_action = Phase2Action(result.action.value)
-    terraform = _generate_terraform_block(result.instance_id, final_action, result.recommended_type)
+    terraform = _generate_terraform_block(result.resource_id, result.resource_name, final_action, result.recommended_type)
 
     logger.info(
-        f"[Phase2][Step3] {result.instance_id} -> SAFE | action={final_action.value}"
+        f"[Phase2][Step3] resource_id={result.resource_id} name={result.resource_name} -> SAFE | action={final_action.value}"
     )
 
     return _make_result(
@@ -173,7 +175,7 @@ async def _step2(
     result: Phase1Result,
     action_cap_applied: bool,
 ) -> Phase2Result:
-    callers = await get_upstream_callers(conn, result.instance_id, max_depth=3)
+    callers = await get_upstream_callers(conn, result.resource_id, max_depth=3)
 
     if not callers:
         return _step3(result, action_cap_applied)
@@ -200,12 +202,13 @@ async def _step2(
                 if result.recommended_type and result.recommended_cost_per_hour is not None:
                     fallback_action = Phase2Action.DOWNSIZE
                     fallback_terraform = _generate_terraform_block(
-                        result.instance_id,
+                        result.resource_id,
+                        result.resource_name,
                         Phase2Action.DOWNSIZE,
                         result.recommended_type,
                     )
                 logger.info(
-                    f"[Phase2][Step2] {result.instance_id} blocked by TYPE_A caller {source_id} at depth {depth}"
+                    f"[Phase2][Step2] resource_id={result.resource_id} blocked by TYPE_A caller {source_id} at depth {depth}"
                 )
                 break
 
@@ -218,24 +221,25 @@ async def _step2(
                 if result.recommended_type and result.recommended_cost_per_hour is not None:
                     fallback_action = Phase2Action.DOWNSIZE
                     fallback_terraform = _generate_terraform_block(
-                        result.instance_id,
+                        result.resource_id,
+                        result.resource_name,
                         Phase2Action.DOWNSIZE,
                         result.recommended_type,
                     )
                 logger.info(
-                    f"[Phase2][Step2] {result.instance_id} is last LB target of {source_id} - blocking TERMINATE"
+                    f"[Phase2][Step2] resource_id={result.resource_id} is last LB target of {source_id} - blocking TERMINATE"
                 )
                 break
 
         elif rel_type in TYPE_C:
             pipeline_warning = True
             logger.info(
-                f"[Phase2][Step2] {result.instance_id} has async TYPE_C caller {source_id} - setting pipeline_warning=True, action unchanged"
+                f"[Phase2][Step2] resource_id={result.resource_id} has async TYPE_C caller {source_id} - setting pipeline_warning=True, action unchanged"
             )
 
         elif rel_type in TYPE_A | TYPE_B | TYPE_C | TYPE_E:
             logger.info(
-                f"[Phase2][Step2] {result.instance_id} encountered relationship {rel_type} from {source_id} at depth {depth}"
+                f"[Phase2][Step2] resource_id={result.resource_id} encountered relationship {rel_type} from {source_id} at depth {depth}"
             )
 
     if hard_blocked:
@@ -255,16 +259,16 @@ async def _step2(
 
 
 async def _process_guardrails(conn: asyncpg.Connection, result: Phase1Result) -> Phase2Result:
-    logger.info(f"[Phase2] Processing {result.instance_id} | role={result.role} | action={result.action}")
+    logger.info(f"[Phase2] Processing {result.resource_id} | role={result.role} | action={result.action}")
 
     early_result, action_cap_applied = _step0(result)
     if early_result is not None:
-        logger.info(f"[Phase2][Step0] {result.instance_id} -> NEEDS_REVIEW (protected_role)")
+        logger.info(f"[Phase2][Step0] {result.resource_id} -> NEEDS_REVIEW (protected_role)")
         return early_result
 
     if action_cap_applied:
         result = result.model_copy(update={"action": WasteAction.DOWNSIZE})
-        logger.info(f"[Phase2][Step0] {result.instance_id} dependant_primary action capped to DOWNSIZE")
+        logger.info(f"[Phase2][Step0] {result.resource_id} dependant_primary action capped to DOWNSIZE")
 
     redundancy_result = await _step1(conn, result)
     if redundancy_result is not None:
@@ -283,7 +287,7 @@ async def run_phase2(conn: asyncpg.Connection, phase1_results: list[Phase1Result
         # table would falsely imply it remains wasteful. Adopted as explicit
         # policy (Option A) — this is intentional, not an oversight.
         if result.action in (WasteAction.SKIP, WasteAction.CLEAN):
-            logger.info(f"[Phase2] Skipping {result.instance_id} ({result.action.value} action from Phase 1)")
+            logger.info(f"[Phase2] Skipping {result.resource_id} ({result.action.value} action from Phase 1)")
             continue
 
         phase2_result = await _process_guardrails(conn, result)
