@@ -2,6 +2,8 @@
 Phase 1 — Statistical Waste Detection
 """
 
+import logging
+
 import asyncpg
 from .models import Phase1Result, WasteAction, WasteType, Rules
 from .queries import (
@@ -12,6 +14,48 @@ from .queries import (
     get_instance_price,
 )
 from .sizing import calculate_recommended_type
+
+
+logger = logging.getLogger(__name__)
+
+
+def _metrics_payload(result: Phase1Result) -> dict[str, float | int | bool | str]:
+    payload: dict[str, float | int | bool | str] = {}
+    for field in ("p95_cpu", "p99_cpu", "max_cpu", "p95_ram", "cv"):
+        value = getattr(result, field, None)
+        if value is not None:
+            payload[field] = float(value)
+
+    if result.stopped_days is not None:
+        payload["stopped_days_since_last_metric"] = int(result.stopped_days)
+    elif result.waste_type == WasteType.ZOMBIE:
+        payload["stopped_days_since_last_metric"] = "unknown"
+        payload["no_metrics_found"] = True
+
+    return payload
+
+
+def _log_instance_metrics(result: Phase1Result) -> None:
+    metrics = _metrics_payload(result)
+    if metrics:
+        logger.info(
+            "[Phase1][Metrics] resource_id=%s name=%s role=%s action=%s metrics=%s",
+            result.resource_id,
+            result.resource_name,
+            result.role,
+            result.action.value,
+            metrics,
+        )
+    else:
+        logger.info(
+            "[Phase1][Metrics] resource_id=%s name=%s role=%s action=%s metrics={}",
+            result.resource_id,
+            result.resource_name,
+            result.role,
+            result.action.value,
+        )
+
+
 async def run_phase1(conn: asyncpg.Connection, rules: Rules) -> list[Phase1Result]:
     instances = await get_all_instances(conn)
     results = []
@@ -20,6 +64,7 @@ async def run_phase1(conn: asyncpg.Connection, rules: Rules) -> list[Phase1Resul
         result = await _process_instance(conn, instance, rules)
         if result is not None:
             results.append(result)
+            _log_instance_metrics(result)
 
     return results
 
@@ -32,9 +77,20 @@ async def _process_instance(
     instance_role = instance["role"]
     region = instance.get("region", "us-east-1")
     os_type = instance.get("os", "linux")
+    zombie_threshold = rules.detection.zombie.stopped_days_threshold
     
     # 1. Global Zombie Check (Applies to all roles regardless of tagging)
-    zombie = await is_zombie(conn, instance["resource_id"], rules.detection.zombie.stopped_days_threshold)
+    zombie, stopped_days = await is_zombie(conn, instance["resource_id"], zombie_threshold)
+    if instance.get("status") == "stopped":
+        logger.info(
+            "[Phase1][ZombieCheck] resource_id=%s name=%s stopped_days=%s threshold=%s zombie=%s",
+            instance["resource_id"],
+            instance["resource_name"],
+            stopped_days if stopped_days is not None else "unknown",
+            zombie_threshold,
+            zombie,
+        )
+
     if zombie:
         current_price = await get_instance_price(
             conn,
@@ -48,11 +104,36 @@ async def _process_instance(
             role=instance_role,
             action=rules.detection.zombie.action,
             waste_type=WasteType.ZOMBIE,
-            detection_window_days=rules.detection.zombie.stopped_days_threshold,
+            detection_window_days=zombie_threshold,
+            stopped_days=stopped_days,
             current_instance_type=instance["instance_type"],
             current_cost_per_hour=current_price,
             waste_per_month=round(current_price * 24 * 30, 2),
-            detection_reason=f"Zombie: stopped for more than {rules.detection.zombie.stopped_days_threshold} days.",
+            detection_reason=(
+                f"Zombie: instance is stopped and last EC2 metric is {stopped_days} days old "
+                f"(threshold={zombie_threshold})."
+                if stopped_days is not None
+                else (
+                    "Zombie: instance is stopped and no EC2 metrics were found "
+                    f"(threshold={zombie_threshold} days)."
+                )
+            ),
+        )
+
+    if instance.get("status") == "stopped" and stopped_days is not None and stopped_days < zombie_threshold:
+        return Phase1Result(
+            resource_id=instance["resource_id"],
+            resource_name=instance["resource_name"],
+            role=instance_role,
+            action=WasteAction.REVIEW,
+            waste_type=WasteType.STOPPED,
+            detection_window_days=zombie_threshold,
+            stopped_days=stopped_days,
+            current_instance_type=instance["instance_type"],
+            detection_reason=(
+                f"Stopped but below zombie threshold: last EC2 metric is {stopped_days} days old "
+                f"(< {zombie_threshold}). Review required before action."
+            ),
         )
     
     # 2. Skip explicitly defined roles
@@ -60,8 +141,8 @@ async def _process_instance(
         return _skip(instance["resource_id"], instance["resource_name"], instance_role)
     
     # 3. Role-based routing (detection logic), but preserve original DB role in output
-    if instance_role == "dependent_primary":
-        return await _detect_dependent_primary(conn, instance, rules, instance_role)
+    if instance_role == "dependant_primary":
+        return await _detect_dependant_primary(conn, instance, rules, instance_role)
     elif instance_role == "bursty":
         return await _detect_bursty(conn, instance, rules, instance_role)
     else:
@@ -80,13 +161,13 @@ def _skip(resource_id: int, resource_name: str, role: str) -> Phase1Result:
     )
 
 
-async def _detect_dependent_primary(
+async def _detect_dependant_primary(
     conn: asyncpg.Connection,
     instance: dict,
     rules: Rules,
     role: str,
 ) -> Phase1Result:
-    r = rules.detection.dependent_primary
+    r = rules.detection.dependant_primary
     resource_id, resource_name, instance_type = instance["resource_id"], instance["resource_name"], instance["instance_type"]
 
     metrics = await get_instance_metrics(conn, resource_id, r.window_days)
@@ -103,9 +184,12 @@ async def _detect_dependent_primary(
             waste_type=WasteType.IDLE,
             detection_window_days=r.window_days,
             p95_cpu=metrics["p95_cpu"],
+            p99_cpu=metrics["p99_cpu"],
+            max_cpu=metrics["max_cpu"],
             p95_ram=metrics["p95_ram"],
+            cv=metrics["cv"],
             detection_reason=(
-                f"Dependent primary idle: P95 CPU {metrics['p95_cpu']:.1f}% and P95 RAM {metrics['p95_ram']:.1f}% "
+                f"Dependant primary idle: P95 CPU {metrics['p95_cpu']:.1f}% and P95 RAM {metrics['p95_ram']:.1f}% "
                 f"below thresholds. Action forced to {r.action.value}."
             ),
             **(_flatten_sizing(sizing, instance_type, instance)),
@@ -133,9 +217,13 @@ async def _detect_bursty(
             resource_id=resource_id,
             resource_name=resource_name,
             role=role,
-            action=WasteAction.CLEAN, # Let agent handle the tag inconsistency warning
+            action=WasteAction.REVIEW,
             waste_type=WasteType.TAG_ERROR,
             detection_window_days=r.window_days,
+            p95_cpu=metrics["p95_cpu"],
+            p99_cpu=metrics["p99_cpu"],
+            max_cpu=metrics["max_cpu"],
+            p95_ram=metrics["p95_ram"],
             cv=metrics["cv"],
             detection_reason=f"Tag inconsistency: Role is bursty, but Coefficient of Variation ({metrics['cv']:.2f}) < {r.cv_threshold}."
         )
@@ -149,7 +237,9 @@ async def _detect_bursty(
             action=r.action,
             waste_type=WasteType.OVERSIZED,
             detection_window_days=r.window_days,
+            p95_cpu=metrics["p95_cpu"],
             p99_cpu=metrics["p99_cpu"],
+            max_cpu=metrics["max_cpu"],
             cv=metrics["cv"],
             p95_ram=metrics["p95_ram"],
             detection_reason=(
@@ -196,8 +286,10 @@ async def _detect_steady(
                 waste_type=WasteType.IDLE,
                 detection_window_days=r.idle.window_days,
                 p95_cpu=idle_metrics["p95_cpu"],
+                p99_cpu=idle_metrics["p99_cpu"],
                 p95_ram=idle_metrics["p95_ram"],
                 max_cpu=idle_metrics["max_cpu"],
+                cv=idle_metrics["cv"],
                 current_instance_type=instance_type,
                 current_cost_per_hour=current_price,
                 waste_per_month=round(current_price * 24 * 30, 2),
@@ -220,10 +312,16 @@ async def _detect_steady(
                 waste_type=WasteType.OVERSIZED,
                 detection_window_days=r.oversized.window_days,
                 p95_cpu=os_metrics["p95_cpu"],
+                p99_cpu=os_metrics["p99_cpu"],
                 p95_ram=os_metrics["p95_ram"],
+                max_cpu=os_metrics["max_cpu"],
+                cv=os_metrics["cv"],
                 detection_reason=f"Steady Oversized: P95 CPU ({os_metrics['p95_cpu']:.1f}%) and P95 RAM ({os_metrics['p95_ram']:.1f}%) below capacity.",
                 **(_flatten_sizing(sizing, instance_type, instance)),
             )
+
+    if last_metrics is None:
+        return _clean(resource_id, resource_name, role, "No metric data available.")
 
     return _clean(resource_id, resource_name, role, "No waste pattern detected.", last_metrics)
 

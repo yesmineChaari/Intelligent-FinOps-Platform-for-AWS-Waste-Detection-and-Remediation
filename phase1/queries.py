@@ -69,25 +69,36 @@ async def is_zombie(
     conn: asyncpg.Connection,
     resource_id: int,
     stopped_days_threshold: int
-) -> bool:
-    """Zombie = stopped for more than N days. No CPU/Network logic needed."""
-    since = datetime.now(timezone.utc) - timedelta(days=stopped_days_threshold)
+) -> tuple[bool, int | None]:
+    """Return zombie decision plus days since last EC2 metric timestamp."""
 
     row = await conn.fetchrow("""
         SELECT
             e.status,
-            e.launched_at
+            CASE
+                WHEN MAX(m.timestamp) IS NULL THEN NULL
+                ELSE FLOOR(EXTRACT(EPOCH FROM (NOW() - MAX(m.timestamp))) / 86400)::int
+            END AS days_since_last_metric,
+            COALESCE(
+                MAX(m.timestamp) <= NOW() - ($2 * INTERVAL '1 day'),
+                TRUE
+            ) AS stale_metrics
         FROM ec2_instances e
+        LEFT JOIN ec2_metrics m ON m.resource_id = e.resource_id
         WHERE e.resource_id = $1
-    """, resource_id)
+        GROUP BY e.status
+    """, resource_id, stopped_days_threshold)
 
     if row is None:
-        return False
+        return False, None
 
     stopped = row["status"] == "stopped"
-    old_enough = row["launched_at"] is not None and row["launched_at"] <= since
+    stale_metrics = bool(row["stale_metrics"])
+    days_since_last_metric = row["days_since_last_metric"]
+    if days_since_last_metric is not None:
+        days_since_last_metric = int(days_since_last_metric)
 
-    return stopped and old_enough
+    return stopped and stale_metrics, days_since_last_metric
 
 
 async def get_sizing_ladder(

@@ -8,7 +8,7 @@ detection:
     stopped_days_threshold: 30
 
 
-  dependent_primary:
+  dependant_primary:
     action: DOWNSIZE
     window_days: 30
     idle_p95_cpu_threshold: 10.0

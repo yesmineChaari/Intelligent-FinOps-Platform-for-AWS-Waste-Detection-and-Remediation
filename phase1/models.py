@@ -8,11 +8,13 @@ class WasteAction(str, Enum):
     TERMINATE = "TERMINATE"
     STOP = "STOP"
     DOWNSIZE = "DOWNSIZE"
+    REVIEW = "REVIEW"
     SKIP = "SKIP"
     CLEAN = "CLEAN"  # no waste detected
 
 class WasteType(str, Enum):
     ZOMBIE = "zombie"
+    STOPPED = "stopped"
     IDLE = "idle"
     OVERSIZED = "oversized"
     TAG_ERROR = "tag_error" # Added for CV failures
@@ -25,6 +27,7 @@ class Phase1Result(BaseModel):
     action: WasteAction
     waste_type: WasteType
     detection_window_days: Optional[int] = None
+    stopped_days: Optional[int] = None
 
     # Metrics snapshot
     p95_cpu: Optional[float] = None
@@ -46,7 +49,7 @@ class Phase1Result(BaseModel):
 
 # ─── Rules Models ────────────────────────────────────────────────────────────
 
-class DependentPrimaryRules(BaseModel):
+class DependantPrimaryRules(BaseModel):
     action: WasteAction
     window_days: int
     idle_p95_cpu_threshold: float
@@ -82,7 +85,7 @@ class SteadyRules(BaseModel):
 class DetectionRules(BaseModel):
     skipped_roles: list[str]
     zombie: ZombieRules
-    dependent_primary: DependentPrimaryRules
+    dependant_primary: DependantPrimaryRules
     bursty: BurstyRules
     steady: SteadyRules
 

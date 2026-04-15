@@ -16,7 +16,6 @@ import sys
 
 from phase1.loader import load_rules
 from phase1.detection import run_phase1
-from phase2 import run_phase2, persist_phase2_results
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -25,6 +24,22 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger(__name__)
+
+
+def _phase1_metrics_payload(result) -> dict[str, float | int | bool | str]:
+    payload: dict[str, float | int | bool | str] = {}
+    for field in ("p95_cpu", "p99_cpu", "max_cpu", "p95_ram", "cv"):
+        value = getattr(result, field, None)
+        if value is not None:
+            payload[field] = float(value)
+
+    if getattr(result, "stopped_days", None) is not None:
+        payload["stopped_days_since_last_metric"] = int(result.stopped_days)
+    elif getattr(getattr(result, "waste_type", None), "value", None) == "zombie":
+        payload["stopped_days_since_last_metric"] = "unknown"
+        payload["no_metrics_found"] = True
+
+    return payload
 
 
 async def wait_for_trigger(redis_client: aioredis.Redis) -> None:
@@ -92,24 +107,16 @@ async def main():
         
         # Clean JSON dump: exclude_none=True prevents logging empty statistical fields 
         # (e.g., CV for steady instances) to keep logs highly readable.
-        output = [r.model_dump(exclude_none=True) for r in results]
+        output = []
+        for r in results:
+            row = r.model_dump(
+                exclude_none=True,
+                exclude={"p95_cpu", "p99_cpu", "max_cpu", "p95_ram", "cv", "stopped_days"},
+            )
+            row["metrics"] = _phase1_metrics_payload(r)
+            output.append(row)
         log.info("Phase 1 Output Payload (JSON):")
         print(json.dumps(output, indent=2, default=str))
-
-        # ── Phase 2: Blast Radius and Guardrails ──
-        log.info("Phase 2 starting — blast radius and guardrail evaluation.")
-
-        phase2_results = await run_phase2(conn, results)
-
-        for r in phase2_results:
-            log.info(r.model_dump_json(exclude_none=True))
-
-        await persist_phase2_results(conn, phase2_results)
-        log.info(
-            f"Phase 2 complete. {len(phase2_results)} rows written to waste table."
-        )
-
-        return phase2_results
 
     finally:
         await conn.close()
