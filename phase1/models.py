@@ -94,6 +94,20 @@ class SizingRules(BaseModel):
     ram_headroom_threshold: float
     cpu_safety_ceiling: float
 
+
+class Phase2BlastRadiusRules(BaseModel):
+    terminate_max_score: int
+    stop_max_score: int
+    downsize_max_score: int
+
+
+class Phase2Rules(BaseModel):
+    blast_radius: Phase2BlastRadiusRules
+    review_label: str
+    type_e_relationships: list[str]
+    weighted_relationships: dict[str, int]
+
 class Rules(BaseModel):
     detection: DetectionRules
     sizing: SizingRules
+    phase2: Phase2Rules

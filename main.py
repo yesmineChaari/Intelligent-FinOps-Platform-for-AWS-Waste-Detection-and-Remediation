@@ -16,6 +16,7 @@ import sys
 
 from phase1.loader import load_rules
 from phase1.detection import run_phase1
+from phase2 import run_phase2
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -39,6 +40,17 @@ def _phase1_metrics_payload(result) -> dict[str, float | int | bool | str]:
         payload["stopped_days_since_last_metric"] = "unknown"
         payload["no_metrics_found"] = True
 
+    return payload
+
+
+def _phase2_metrics_payload(result) -> dict[str, int | bool]:
+    payload = {
+        "blast_radius_score": int(result.blast_radius_score),
+        "relationship_count": int(result.relationship_count),
+        "phase2_action_changed": bool(result.phase2_action_changed),
+    }
+    if getattr(result, "stopped_days", None) is not None:
+        payload["stopped_days_since_last_metric"] = int(result.stopped_days)
     return payload
 
 
@@ -117,6 +129,29 @@ async def main():
             output.append(row)
         log.info("Phase 1 Output Payload (JSON):")
         print(json.dumps(output, indent=2, default=str))
+
+        # ── Phase 2 ───────────────────────────────────────────────────────
+        log.info("Phase 2 starting — relationship graph guardrails...")
+        phase2_results = await run_phase2(conn, results, rules.phase2)
+
+        log.info(f"Phase 2 complete. {len(phase2_results)} resources evaluated.")
+        for r in phase2_results:
+            log.info(
+                f"  [Phase2] {r.resource_id} phase1_action={r.action} → phase2_action={r.phase2_action} "
+                f"| blast={r.blast_radius_score} | {r.phase2_action_reason or 'action kept'}"
+            )
+
+        phase2_output = []
+        for r in phase2_results:
+            row = r.model_dump(
+                exclude_none=True,
+                exclude={"blast_radius_score", "relationship_count", "stopped_days", "phase1_action"},
+            )
+            row["metrics"] = _phase2_metrics_payload(r)
+            phase2_output.append(row)
+
+        log.info("Phase 2 Output Payload (JSON):")
+        print(json.dumps(phase2_output, indent=2, default=str))
 
     finally:
         await conn.close()

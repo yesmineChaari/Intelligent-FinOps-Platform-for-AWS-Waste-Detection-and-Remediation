@@ -7,7 +7,6 @@ detection:
     action: TERMINATE
     stopped_days_threshold: 30
 
-
   dependant_primary:
     action: DOWNSIZE
     window_days: 30
@@ -38,3 +37,18 @@ sizing:
   max_drop_steps: 2
   ram_headroom_threshold: 80.0
   cpu_safety_ceiling: 80.0
+
+phase2:
+  blast_radius:
+    terminate_max_score: 0
+    stop_max_score: 1
+    downsize_max_score: 3
+  review_label: "REVIEW"
+  type_e_relationships:
+    - replicates_to
+    - failover_for
+  weighted_relationships:
+    backup_of: 3
+    writes_to: 2
+    reads_from: 1
+    sends_logs_to: 1
