@@ -28,6 +28,7 @@ class Phase2Result(BaseModel):
     phase2_action_changed: bool = False
     phase2_action_reason: str | None = None
     phase2_decision_details: str | None = None
+    blast_radius_explanation: str | None = None
 
     blast_radius_score: int = 0
     relationship_count: int = 0

@@ -138,7 +138,8 @@ async def main():
         for r in phase2_results:
             log.info(
                 f"  [Phase2] {r.resource_id} phase1_action={r.action} → phase2_action={r.phase2_action} "
-                f"| blast={r.blast_radius_score} | {r.phase2_action_reason or 'action kept'}"
+                f"| blast={r.blast_radius_score} | {r.phase2_action_reason or 'action kept'} "
+                f"| score_expl={r.blast_radius_explanation}"
             )
 
         phase2_output = []

@@ -53,6 +53,27 @@ def _format_relationship_counts(type_counts: dict[str, int]) -> str:
     return ", ".join(f"{rel_type}:{count}" for rel_type, count in sorted(type_counts.items()))
 
 
+def _build_blast_radius_explanation(
+    relationship_type_counts: dict[str, int],
+    blast_weights: dict[str, int],
+    blast_radius_score: int,
+    skip_context: str | None = None,
+) -> str:
+    weighted_terms: list[str] = []
+    for rel_type, count in sorted(relationship_type_counts.items()):
+        weight = int(blast_weights.get(rel_type, 0))
+        if weight > 0:
+            weighted_terms.append(f"{rel_type}({weight}x{count}={weight * count})")
+
+    weighted_formula = " + ".join(weighted_terms) if weighted_terms else "no weighted relationships"
+    base = f"blast_radius_score={blast_radius_score} computed as {weighted_formula}."
+
+    if skip_context:
+        return base + f" Scoring was not used for actioning because {skip_context}."
+
+    return base
+
+
 def _build_decision_details(
     phase1_action: WasteAction,
     phase2_action: WasteAction,
@@ -136,22 +157,75 @@ async def run_phase2(
     phase2_rules: Phase2Rules,
 ) -> list[Phase2Result]:
     """Run Phase 2 graph-aware guardrails on Phase 1 flagged instances."""
-    flagged = [r for r in phase1_results if r.action not in (WasteAction.CLEAN, WasteAction.SKIP)]
-    if not flagged:
-        logger.info("[Phase2] No flagged resources from Phase 1. Nothing to process.")
+    if not phase1_results:
+        logger.info("[Phase2] No Phase 1 results received.")
         return []
+
+    blast_weights = {
+        relationship_type.lower(): int(weight)
+        for relationship_type, weight in phase2_rules.weighted_relationships.items()
+    }
+
+    bypassed = [r for r in phase1_results if r.action in (WasteAction.CLEAN, WasteAction.SKIP)]
+    flagged = [r for r in phase1_results if r.action not in (WasteAction.CLEAN, WasteAction.SKIP)]
+
+    output: list[Phase2Result] = []
+
+    for result in bypassed:
+        phase2_reason = (
+            "Phase 2 skipped: resource is not eligible for graph guardrails because "
+            f"Phase 1 action is {result.action.value}."
+        )
+        output.append(
+            Phase2Result(
+                resource_id=result.resource_id,
+                resource_name=result.resource_name,
+                role=result.role,
+                waste_type=result.waste_type,
+                phase1_action=result.action,
+                action=result.action,
+                detection_reason=result.detection_reason,
+                phase2_action=WasteAction.SKIP,
+                phase2_action_changed=WasteAction.SKIP != result.action,
+                phase2_action_reason=phase2_reason,
+                phase2_decision_details=_build_decision_details(
+                    phase1_action=result.action,
+                    phase2_action=WasteAction.SKIP,
+                    blast_radius_score=0,
+                    relationship_type_counts={},
+                    has_writes_or_logs=False,
+                    phase2_rules=phase2_rules,
+                    reason=phase2_reason,
+                ),
+                blast_radius_explanation=_build_blast_radius_explanation(
+                    relationship_type_counts={},
+                    blast_weights=blast_weights,
+                    blast_radius_score=0,
+                    skip_context="resource was not eligible for Phase 2 scoring",
+                ),
+                blast_radius_score=0,
+                relationship_count=0,
+                skip_write=True,
+                guardrail_reason=phase2_reason,
+                detection_window_days=result.detection_window_days,
+                stopped_days=result.stopped_days,
+                current_instance_type=result.current_instance_type,
+                recommended_type=result.recommended_type,
+                current_cost_per_hour=result.current_cost_per_hour,
+                recommended_cost_per_hour=result.recommended_cost_per_hour,
+                waste_per_month=result.waste_per_month,
+            )
+        )
+
+    if not flagged:
+        logger.info("[Phase2] No graph-eligible resources. Returning %s skipped entries.", len(output))
+        return output
 
     flagged_ids = sorted({r.resource_id for r in flagged})
     relationships = await load_local_relationships(conn, flagged_ids)
     grouped_relationships = _group_relationships(set(flagged_ids), relationships)
 
     type_e_relationships = {rel_type.lower() for rel_type in phase2_rules.type_e_relationships}
-    blast_weights = {
-        relationship_type.lower(): int(weight)
-        for relationship_type, weight in phase2_rules.weighted_relationships.items()
-    }
-
-    output: list[Phase2Result] = []
 
     for result in flagged:
         local_relationships = grouped_relationships.get(result.resource_id, [])
@@ -165,6 +239,12 @@ async def run_phase2(
                 f"({', '.join(type_e_hits)}). Action skipped, no write."
             )
             phase2_action = WasteAction.SKIP
+            blast_explanation = _build_blast_radius_explanation(
+                relationship_type_counts=relationship_type_counts,
+                blast_weights=blast_weights,
+                blast_radius_score=0,
+                skip_context="Guardrail A (Type-E) forced SKIP",
+            )
             output.append(
                 Phase2Result(
                     resource_id=result.resource_id,
@@ -186,6 +266,7 @@ async def run_phase2(
                         phase2_rules=phase2_rules,
                         reason=phase2_reason,
                     ),
+                    blast_radius_explanation=blast_explanation,
                     blast_radius_score=0,
                     relationship_count=len(local_relationships),
                     skip_write=True,
@@ -212,6 +293,11 @@ async def run_phase2(
         )
 
         phase2_reason = reason or "No downgrade applied. Phase 1 action retained."
+        blast_explanation = _build_blast_radius_explanation(
+            relationship_type_counts=relationship_type_counts,
+            blast_weights=blast_weights,
+            blast_radius_score=blast_radius_score,
+        )
 
         output.append(
             Phase2Result(
@@ -234,6 +320,7 @@ async def run_phase2(
                     phase2_rules=phase2_rules,
                     reason=phase2_reason,
                 ),
+                blast_radius_explanation=blast_explanation,
                 blast_radius_score=blast_radius_score,
                 relationship_count=len(local_relationships),
                 skip_write=False,
@@ -248,5 +335,10 @@ async def run_phase2(
             )
         )
 
-    logger.info("[Phase2] Completed guardrails for %s flagged resources.", len(output))
+    logger.info(
+        "[Phase2] Completed guardrails for %s resources (%s evaluated, %s skipped).",
+        len(output),
+        len(flagged),
+        len(bypassed),
+    )
     return output
