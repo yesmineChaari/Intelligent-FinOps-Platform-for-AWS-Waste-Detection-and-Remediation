@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 def _metrics_payload(result: Phase1Result) -> dict[str, float | int | bool | str]:
     payload: dict[str, float | int | bool | str] = {}
-    for field in ("p95_cpu", "p99_cpu", "max_cpu", "p95_ram", "cv"):
+    for field in ("p95_cpu", "p99_cpu", "max_cpu", "p95_ram", "cv", 
+                  "max_network_mbps", "max_disk_mbps", "p99_network_mbps", "p99_disk_mbps"):
         value = getattr(result, field, None)
         if value is not None:
             payload[field] = float(value)
@@ -135,12 +136,43 @@ async def _process_instance(
                 f"(< {zombie_threshold}). Review required before action."
             ),
         )
+    # ── 1b. Running Zombie Check ──────────────────────────────────────
+    if instance.get("status") == "running":
+        r_zombie = rules.detection.zombie
+        running_metrics = await get_instance_metrics(conn, instance["resource_id"], r_zombie.running_window_days)
+        
+        # Check if ALL three dimensions (CPU, Network, Disk) are essentially zero
+        if running_metrics and (
+            running_metrics["max_cpu"] < r_zombie.max_cpu_threshold and
+            running_metrics.get("max_network_mbps", 0) < r_zombie.max_network_mbps_threshold and
+            running_metrics.get("max_disk_mbps", 0) < r_zombie.max_disk_mbps_threshold
+        ):
+            current_price = await get_instance_price(conn, instance["instance_type"], region, os_type) or 0.0
+            return Phase1Result(
+                resource_id=instance["resource_id"],
+                resource_name=instance["resource_name"],
+                role=instance_role,
+                action=r_zombie.action,
+                waste_type=WasteType.ZOMBIE,
+                detection_window_days=r_zombie.running_window_days,
+                current_instance_type=instance["instance_type"],
+                current_cost_per_hour=current_price,
+                waste_per_month=round(current_price * 24 * 30, 2),
+                max_cpu=running_metrics["max_cpu"],
+                max_network_mbps=running_metrics.get("max_network_mbps"),
+                max_disk_mbps=running_metrics.get("max_disk_mbps"),
+                detection_reason=(
+                    f"Running Zombie: Max CPU ({running_metrics['max_cpu']:.1f}%), "
+                    f"Max Network ({running_metrics.get('max_network_mbps', 0):.1f} Mbps), "
+                    f"and Max Disk ({running_metrics.get('max_disk_mbps', 0):.1f} Mbps) are all virtually zero over {r_zombie.running_window_days} days."
+                ),
+            )
     
     # 2. Skip explicitly defined roles
     if instance_role in rules.detection.skipped_roles:
         return _skip(instance["resource_id"], instance["resource_name"], instance_role)
     
-    # 3. Role-based routing (detection logic), but preserve original DB role in output
+    # 3. Role-based routing (detection logic)
     if instance_role == "dependant_primary":
         return await _detect_dependant_primary(conn, instance, rules, instance_role)
     elif instance_role == "bursty":
@@ -175,7 +207,12 @@ async def _detect_dependant_primary(
         return _clean(resource_id, resource_name, role, "No metric data available.")
 
     if metrics["p95_cpu"] < r.idle_p95_cpu_threshold and metrics["p95_ram"] < r.idle_p95_ram_threshold:
-        sizing = await _get_sizing(conn, instance, metrics["p95_cpu"], metrics["p95_ram"], rules)
+        sizing = await _get_sizing(
+            conn, instance, 
+            metrics["p95_cpu"], metrics["p95_ram"], 
+            metrics.get("p99_network_mbps", 0.0), metrics.get("p99_disk_mbps", 0.0), 
+            rules
+        )
         return Phase1Result(
             resource_id=resource_id,
             resource_name=resource_name,
@@ -229,7 +266,12 @@ async def _detect_bursty(
         )
 
     if metrics["p99_cpu"] < r.idle_p99_cpu_threshold:
-        sizing = await _get_sizing(conn, instance, metrics["p99_cpu"], metrics["p95_ram"], rules)
+        sizing = await _get_sizing(
+            conn, instance, 
+            metrics["p99_cpu"], metrics["p95_ram"], 
+            metrics.get("p99_network_mbps", 0.0), metrics.get("p99_disk_mbps", 0.0), 
+            rules
+        )
         return Phase1Result(
             resource_id=resource_id,
             resource_name=resource_name,
@@ -303,7 +345,12 @@ async def _detect_steady(
         if (os_metrics["p95_cpu"] < r.oversized.p95_cpu_threshold and 
             os_metrics["p95_ram"] < r.oversized.p95_ram_threshold):
             
-            sizing = await _get_sizing(conn, instance, os_metrics["p95_cpu"], os_metrics["p95_ram"], rules)
+            sizing = await _get_sizing(
+                conn, instance, 
+                os_metrics["p95_cpu"], os_metrics["p95_ram"], 
+                os_metrics.get("p99_network_mbps", 0.0), os_metrics.get("p99_disk_mbps", 0.0), 
+                rules
+            )
             return Phase1Result(
                 resource_id=resource_id,
                 resource_name=resource_name,
@@ -344,12 +391,14 @@ def _clean(resource_id: int, resource_name: str, role: str, reason: str, metrics
         detection_reason=reason,
     )
 
-# Inside detection.py
+
 async def _get_sizing(
     conn: asyncpg.Connection,
     instance: dict,             
     cpu_to_project: float,
     ram_to_project: float,
+    network_to_project: float,  
+    disk_to_project: float,     
     rules: Rules,
 ) -> dict | None:
     
@@ -357,7 +406,6 @@ async def _get_sizing(
     region = instance.get("region", "us-east-1") 
     os_type = instance.get("os", "Linux")      
     
-  
     instance_family = instance_type.split(".")[0]
 
     ladder = await get_sizing_ladder(conn, instance_family, region, os_type)
@@ -373,6 +421,8 @@ async def _get_sizing(
         current_price_per_hour=float(current_entry["price_per_hour"]),
         observed_cpu_pct=cpu_to_project,
         observed_ram_pct=ram_to_project,
+        observed_network_mbps=network_to_project,  
+        observed_disk_mbps=disk_to_project,        
         ladder=ladder,
         rules=rules.sizing,
     )

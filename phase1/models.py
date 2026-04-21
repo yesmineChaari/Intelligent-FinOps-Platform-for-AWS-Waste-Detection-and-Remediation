@@ -30,6 +30,7 @@ class Phase1Result(BaseModel):
     waste_type: WasteType
     detection_window_days: Optional[int] = None
     stopped_days: Optional[int] = None
+    
 
     # Metrics snapshot
     p95_cpu: Optional[float] = None
@@ -47,6 +48,10 @@ class Phase1Result(BaseModel):
     recommended_cost_per_hour: Optional[float] = None
     waste_per_month: Optional[float] = None
     detection_reason: Optional[str] = None
+    p99_network_mbps: Optional[float] = None
+    p99_disk_mbps: Optional[float] = None
+    max_network_mbps: Optional[float] = None
+    max_disk_mbps: Optional[float] = None
 
 
 # ─── Rules Models ────────────────────────────────────────────────────────────
@@ -63,9 +68,14 @@ class BurstyRules(BaseModel):
     cv_threshold: float
     idle_p99_cpu_threshold: float
 
+# 1. Updated ZombieRules
 class ZombieRules(BaseModel):
     action: WasteAction
     stopped_days_threshold: int
+    running_window_days: int
+    max_cpu_threshold: float
+    max_network_mbps_threshold: float
+    max_disk_mbps_threshold: float
 
 class IdleRules(BaseModel):
     action: WasteAction
@@ -91,11 +101,12 @@ class DetectionRules(BaseModel):
     bursty: BurstyRules
     steady: SteadyRules
 
+# 2. Updated SizingRules
 class SizingRules(BaseModel):
     max_drop_steps: int
     ram_headroom_threshold: float
     cpu_safety_ceiling: float
-
+    io_safety_ceiling: float
 
 class Phase2BlastRadiusRules(BaseModel):
     terminate_max_score: int

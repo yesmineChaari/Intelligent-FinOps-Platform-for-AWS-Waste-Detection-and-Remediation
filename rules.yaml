@@ -5,7 +5,16 @@ detection:
 
   zombie:
     action: TERMINATE
+    # A stopped instance is flagged as zombie after 30 days of stale metrics.
+    # A running instance is evaluated over a shorter 14-day window because
+    # a live machine with zero activity is an immediate cost leak — it doesn't
+    # need to sit idle for a month before we act. The asymmetry is intentional.
     stopped_days_threshold: 30
+    # Adding Running Zombie Rules ( we added the disk and network thresholds here )
+    running_window_days: 14
+    max_cpu_threshold: 1.5 # Max CPU must be under 1.5%
+    max_network_mbps_threshold: 5.0 # Max Network under 5 Mbps
+    max_disk_mbps_threshold: 1.0 # Max Disk under 1 Mbps
 
   dependant_primary:
     action: DOWNSIZE
@@ -16,8 +25,13 @@ detection:
   bursty:
     action: DOWNSIZE
     window_days: 30
-    cv_threshold: 1.0
-    idle_p99_cpu_threshold: 40.0
+    # cv_threshold: a CV below this means the workload is NOT actually bursty
+    # and the role tag is wrong. 0.5 is the correct boundary — it means the
+    # std-dev is half the mean, which is already a clearly variable workload.
+    # 1.0 (std-dev == mean) is too aggressive and will misclassify many
+    # legitimately bursty instances as TAG_ERROR. Tune upward only with real data.
+    cv_threshold: 0.5
+    idle_p99_cpu_threshold: 30.0
 
   steady:
     idle:
@@ -36,7 +50,8 @@ detection:
 sizing:
   max_drop_steps: 2
   ram_headroom_threshold: 80.0
-  cpu_safety_ceiling: 80.0
+  cpu_safety_ceiling: 70.0
+  io_safety_ceiling: 80.0 # ---  Network/Disk cap ---
 
 phase2:
   blast_radius:
@@ -53,17 +68,14 @@ phase2:
     reads_from: 1
     sends_logs_to: 1
 
-
-
 s3:
   abandoned:
     window_days: 30
-    min_object_count: 1        
-    max_total_requests: 0      
+    min_object_count: 1
+    max_total_requests: 10
   storage_mismatch:
     window_days: 90
-    pct_older_90_days_threshold: 50.0 
-    min_pct_in_standard: 80.0          
-
+    pct_older_90_days_threshold: 50.0
+    min_pct_in_standard: 80.0
     standard_price_per_gb: 0.023
-    glacier_price_per_gb:  0.004
+    glacier_price_per_gb: 0.004

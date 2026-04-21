@@ -17,13 +17,10 @@ class Phase2Result(BaseModel):
     resource_name: str
     role: str
     waste_type: WasteType
-
-    # Keep Phase 1 values unchanged for easier side-by-side debugging.
     phase1_action: WasteAction
     action: WasteAction
     detection_reason: str | None = None
 
-    # Phase 2 outputs are additive and never overwrite the Phase 1 fields above.
     phase2_action: WasteAction
     phase2_action_changed: bool = False
     phase2_action_reason: str | None = None

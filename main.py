@@ -143,10 +143,14 @@ async def main():
 
         ec2_output = []
         for r in ec2_results:
+            # Update the exclude block in the payload dump
             row = r.model_dump(
-                exclude_none=True,
-                exclude={"p95_cpu", "p99_cpu", "max_cpu", "p95_ram", "cv", "stopped_days"},
-            )
+            exclude_none=True,
+            exclude={
+                "p95_cpu", "p99_cpu", "max_cpu", "p95_ram", "cv", "stopped_days",
+                "max_network_mbps", "max_disk_mbps", "p99_network_mbps", "p99_disk_mbps" # NEW
+            },
+        )
             row["metrics"] = _phase1_metrics_payload(r)
             ec2_output.append(row)
 

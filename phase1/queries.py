@@ -38,31 +38,37 @@ async def get_instance_metrics(
     """
     since = datetime.now(timezone.utc) - timedelta(days=window_days)
     row = await conn.fetchrow("""
-        SELECT
-            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY cpu_pct) AS p95_cpu,
-            PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY cpu_pct) AS p99_cpu,
-            MAX(cpu_pct) AS max_cpu,
-            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY ram_pct) AS p95_ram,
-            -- CV = Standard Deviation / Mean. Protect against divide-by-zero.
-            CASE 
-                WHEN AVG(cpu_pct) > 0 THEN STDDEV(cpu_pct) / AVG(cpu_pct) 
-                ELSE 0 
-            END AS cv
-        FROM ec2_metrics
-        WHERE resource_id = $1
-          AND timestamp >= $2
-    """, resource_id, since)
+    SELECT
+        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY cpu_pct) AS p95_cpu,
+        PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY cpu_pct) AS p99_cpu,
+        MAX(cpu_pct) AS max_cpu,
+        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY ram_pct) AS p95_ram,
+        STDDEV(cpu_pct) / NULLIF(AVG(cpu_pct), 0) AS cv,
+        
+        -- NEW: IO Aggregations (Combining In+Out and Read+Write)
+        MAX(network_in + network_out) AS max_network_mbps,
+        PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY network_in + network_out) AS p99_network_mbps,
+        MAX(disk_read + disk_write) AS max_disk_mbps,
+        PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY disk_read + disk_write) AS p99_disk_mbps
+        
+    FROM ec2_metrics
+    WHERE resource_id = $1 AND timestamp >= $2
+""", resource_id, since)
 
     if row is None or row["p95_cpu"] is None:
         return None
 
     return {
-        "p95_cpu": float(row["p95_cpu"]),
-        "p99_cpu": float(row["p99_cpu"]),
-        "max_cpu": float(row["max_cpu"]),
-        "p95_ram": float(row["p95_ram"]),
-        "cv": float(row["cv"]),
-    }
+    "p95_cpu": float(row["p95_cpu"]),
+    "p99_cpu": float(row["p99_cpu"]),
+    "max_cpu": float(row["max_cpu"]),
+    "p95_ram": float(row["p95_ram"]),
+    "cv": float(row["cv"]) if row["cv"] is not None else 0.0,
+    "max_network_mbps": float(row["max_network_mbps"] or 0),
+    "p99_network_mbps": float(row["p99_network_mbps"] or 0),
+    "max_disk_mbps": float(row["max_disk_mbps"] or 0),
+    "p99_disk_mbps": float(row["p99_disk_mbps"] or 0),
+}
 
 
 async def is_zombie(
