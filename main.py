@@ -16,6 +16,7 @@ import sys
 
 from phase1.loader import load_rules
 from phase1.detection import run_phase1
+from phase1.s3_detection import run_s3_phase1
 from phase2 import run_phase2
 from dotenv import load_dotenv
 load_dotenv()
@@ -82,6 +83,7 @@ async def main():
         
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
     rules_path = os.environ.get("RULES_PATH", "rules.yaml")
+    findings_limit = 10
 
     # ── Load rules at startup — fail fast if malformed ────────────────────
     log.info(f"Loading statistical thresholds from {rules_path}...")
@@ -128,7 +130,18 @@ async def main():
             row["metrics"] = _phase1_metrics_payload(r)
             output.append(row)
         log.info("Phase 1 Output Payload (JSON):")
-        print(json.dumps(output, indent=2, default=str))
+        ec2_output = output[:findings_limit]
+        print(json.dumps(ec2_output, indent=2, default=str))
+
+        # ── Phase 1 (S3) ──────────────────────────────────────────────────
+        log.info("Starting S3 Phase 1 — Bucket Waste Detection...")
+        s3_results = await run_s3_phase1(conn, rules.s3)
+
+        log.info("S3 Phase 1 complete. %s bucket findings generated.", len(s3_results))
+        s3_output = [r.model_dump(exclude_none=True) for r in s3_results]
+        s3_output = s3_output[:findings_limit]
+        log.info("S3 Phase 1 Output Payload (JSON):")
+        print(json.dumps(s3_output, indent=2, default=str))
 
         # ── Phase 2 ───────────────────────────────────────────────────────
         log.info("Phase 2 starting — relationship graph guardrails...")

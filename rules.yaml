@@ -52,3 +52,17 @@ phase2:
     writes_to: 2
     reads_from: 1
     sends_logs_to: 1
+
+# S3 detection thresholds used by phase1/s3_detection.py
+s3:
+  abandoned:
+    window_days: 30
+    min_object_count: 100
+    max_total_requests: 0
+
+  storage_mismatch:
+    window_days: 30
+    pct_older_90_days_threshold: 70.0
+    min_pct_in_standard: 70.0
+    standard_price_per_gb: 0.023
+    glacier_price_per_gb: 0.004
