@@ -146,7 +146,7 @@ async def _process_instance(
     elif instance_role == "bursty":
         return await _detect_bursty(conn, instance, rules, instance_role)
     else:
-        # Any other role (including literal "steady" or typos) goes through steady logic
+       
         return await _detect_steady(conn, instance, rules, instance_role)
 
 
@@ -211,7 +211,7 @@ async def _detect_bursty(
     if not metrics:
         return _clean(resource_id, resource_name, role, "No metric data available.")
 
-    # Validation: Is it actually bursty? (The Cortez / Shen critique fix)
+
     if metrics["cv"] < r.cv_threshold:
         return Phase1Result(
             resource_id=resource_id,
@@ -354,13 +354,12 @@ async def _get_sizing(
 ) -> dict | None:
     
     instance_type = instance["instance_type"]
-    region = instance.get("region", "us-east-1") # fallback if not selected
-    os_type = instance.get("os", "Linux")        # fallback if not selected
+    region = instance.get("region", "us-east-1") 
+    os_type = instance.get("os", "Linux")      
     
-    # Extract family (e.g., "m5.large" -> "m5") to pass to the query
+  
     instance_family = instance_type.split(".")[0]
 
-    # Pass the region and OS down to the query
     ladder = await get_sizing_ladder(conn, instance_family, region, os_type)
     if not ladder: return None
 
@@ -369,7 +368,7 @@ async def _get_sizing(
 
     return calculate_recommended_type(
         current_type=instance_type,
-        current_vcpus=current_entry["vcpu"], # using the new key
+        current_vcpus=current_entry["vcpu"], 
         current_ram_gb=current_entry["ram_gb"],
         current_price_per_hour=float(current_entry["price_per_hour"]),
         observed_cpu_pct=cpu_to_project,

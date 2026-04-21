@@ -1,9 +1,9 @@
 """
-Agent 2 — Phase 1 entrypoint.
+Agent 1/2 — Phase 1 + Phase 2 entrypoint.
 
 Wakes up on ingestion_complete from Redis Streams.
-Connects to Neon DB, loads rules, runs detection, returns results in memory.
-No database writes happen in Phase 1 — results are passed directly to Phase 2.
+Connects to Neon DB, loads rules, runs EC2 and S3 detections.
+Phase 1 results stay in memory and are passed to Phase 2.
 """
 
 import asyncio
@@ -16,6 +16,7 @@ import sys
 
 from phase1.loader import load_rules
 from phase1.detection import run_phase1
+from phase1.s3_detection import run_s3_phase1
 from phase2 import run_phase2
 from dotenv import load_dotenv
 load_dotenv()
@@ -51,6 +52,23 @@ def _phase2_metrics_payload(result) -> dict[str, int | bool]:
     }
     if getattr(result, "stopped_days", None) is not None:
         payload["stopped_days_since_last_metric"] = int(result.stopped_days)
+    return payload
+
+
+def _s3_metrics_payload(result) -> dict[str, float | int | bool]:
+    payload: dict[str, float | int | bool] = {}
+
+    if getattr(result, "has_lifecycle", None) is not None:
+        payload["has_lifecycle"] = bool(result.has_lifecycle)
+    if getattr(result, "total_requests_30d", None) is not None:
+        payload["total_requests_30d"] = float(result.total_requests_30d)
+    if getattr(result, "object_count", None) is not None:
+        payload["object_count"] = int(result.object_count)
+    if getattr(result, "pct_older_90_days", None) is not None:
+        payload["pct_older_90_days"] = float(result.pct_older_90_days)
+    if getattr(result, "estimated_monthly_savings", None) is not None:
+        payload["estimated_monthly_savings"] = float(result.estimated_monthly_savings)
+
     return payload
 
 
@@ -104,35 +122,55 @@ async def main():
 
     try:
         # ── Phase 1 ───────────────────────────────────────────────────────
-        log.info("Starting Phase 1 — Statistical Waste Detection...")
-        results = await run_phase1(conn, rules)
+        log.info("Starting EC2 Phase 1 — Statistical Waste Detection...")
+        ec2_results = await run_phase1(conn, rules)
 
-        log.info(f"Phase 1 complete. {len(results)} instances flagged for potential action.")
-        for r in results:
+        log.info(f"EC2 Phase 1 complete. {len(ec2_results)} instances flagged for potential action.")
+        for r in ec2_results:
             log.info(
                 f"  [{r.role}] {r.resource_id} → {r.action.value} "
                 f"({r.waste_type.value}) | {r.detection_reason}"
             )
 
-        # Phase 1 results stay in memory — passed directly to Phase 2
-        # Phase 2 will run here in the same process, receiving `results`
-        
-        # Clean JSON dump: exclude_none=True prevents logging empty statistical fields 
-        # (e.g., CV for steady instances) to keep logs highly readable.
-        output = []
-        for r in results:
+        log.info("Starting S3 Phase 1 — Bucket Waste Detection...")
+        s3_results = await run_s3_phase1(conn, rules.s3)
+        log.info(f"S3 Phase 1 complete. {len(s3_results)} bucket findings.")
+        for r in s3_results:
+            log.info(
+                f"  [S3] {r.bucket_name} → {r.action.value} "
+                f"({r.waste_type.value}) | {r.detection_reason}"
+            )
+
+        ec2_output = []
+        for r in ec2_results:
             row = r.model_dump(
                 exclude_none=True,
                 exclude={"p95_cpu", "p99_cpu", "max_cpu", "p95_ram", "cv", "stopped_days"},
             )
             row["metrics"] = _phase1_metrics_payload(r)
-            output.append(row)
+            ec2_output.append(row)
+
+        s3_output = []
+        for r in s3_results:
+            row = r.model_dump(
+                exclude_none=True,
+                exclude={
+                    "has_lifecycle",
+                    "total_requests_30d",
+                    "object_count",
+                    "pct_older_90_days",
+                    "estimated_monthly_savings",
+                },
+            )
+            row["metrics"] = _s3_metrics_payload(r)
+            s3_output.append(row)
+
         log.info("Phase 1 Output Payload (JSON):")
-        print(json.dumps(output, indent=2, default=str))
+        print(json.dumps({"ec2": ec2_output, "s3": s3_output}, indent=2, default=str))
 
         # ── Phase 2 ───────────────────────────────────────────────────────
         log.info("Phase 2 starting — relationship graph guardrails...")
-        phase2_results = await run_phase2(conn, results, rules.phase2)
+        phase2_results = await run_phase2(conn, ec2_results, rules.phase2)
 
         log.info(f"Phase 2 complete. {len(phase2_results)} resources evaluated.")
         for r in phase2_results:

@@ -2,6 +2,8 @@ from pydantic import BaseModel
 from typing import Optional
 from enum import Enum
 
+from .s3_models import S3Rules
+
 # ─── Phase 1 Output Models ────────────────────────────────────────────────────
 
 class WasteAction(str, Enum):
@@ -111,3 +113,4 @@ class Rules(BaseModel):
     detection: DetectionRules
     sizing: SizingRules
     phase2: Phase2Rules
+    s3: S3Rules
