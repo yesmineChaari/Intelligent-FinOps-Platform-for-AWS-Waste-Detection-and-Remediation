@@ -55,13 +55,14 @@ async def get_bucket_request_total(
     return float(row["total_requests"])
 
 
-async def get_latest_object_sample(
+async def get_latest_object_samples(
     conn: asyncpg.Connection,
     resource_id: int,
-) -> Optional[dict]:
-    row = await conn.fetchrow(
+) -> list[dict]:
+    rows = await conn.fetch(
         """
-        SELECT
+        SELECT DISTINCT ON (grouping_key)
+            grouping_key,
             sample_size,
             pct_older_than_30_days,
             pct_older_than_90_days,
@@ -72,22 +73,21 @@ async def get_latest_object_sample(
             sampled_at
         FROM s3_object_samples
         WHERE resource_id = $1
-        ORDER BY sampled_at DESC
-        LIMIT 1
+        ORDER BY grouping_key, sampled_at DESC
         """,
         resource_id,
     )
 
-    if row is None:
-        return None
-
-    return {
-        "sample_size": int(row["sample_size"]),
-        "pct_older_than_30_days": float(row["pct_older_than_30_days"]),
-        "pct_older_than_90_days": float(row["pct_older_than_90_days"]),
-        "pct_older_than_180_days": float(row["pct_older_than_180_days"]),
-        "pct_in_standard": float(row["pct_in_standard"]),
-        "pct_in_standard_ia": float(row["pct_in_standard_ia"]),
-        "pct_in_glacier": float(row["pct_in_glacier"]),
-        "sampled_at": row["sampled_at"],
-    }
+    return [
+        {
+            "grouping_key": row["grouping_key"],
+            "sample_size": int(row["sample_size"]),
+            "pct_older_than_30_days": float(row["pct_older_than_30_days"]),
+            "pct_older_than_90_days": float(row["pct_older_than_90_days"]),
+            "pct_older_than_180_days": float(row["pct_older_than_180_days"]),
+            "pct_in_standard": float(row["pct_in_standard"]),
+            "pct_in_standard_ia": float(row["pct_in_standard_ia"]),
+            "pct_in_glacier": float(row["pct_in_glacier"]),
+        }
+        for row in rows
+    ]

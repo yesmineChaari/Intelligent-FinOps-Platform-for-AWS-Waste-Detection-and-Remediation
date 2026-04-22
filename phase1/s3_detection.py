@@ -5,8 +5,8 @@ Rules are independent: multiple findings can be produced for one bucket.
 
 import asyncpg
 
-from .s3_models import S3Action, S3FindingResult, S3Rules, S3WasteType
-from .s3_queries import get_all_buckets, get_bucket_request_total, get_latest_object_sample
+from .s3_models import S3Action, S3FindingResult, S3Rules, S3StorageMismatchRules, S3WasteType
+from .s3_queries import get_all_buckets, get_bucket_request_total, get_latest_object_samples
 
 
 async def run_s3_phase1(
@@ -38,9 +38,11 @@ async def _process_bucket(
     if r2.action != S3Action.CLEAN:
         results.append(r2)
 
-    r3 = await _rule3_storage_mismatch(conn, bucket, rules.storage_mismatch)
-    if r3.action != S3Action.CLEAN:
-        results.append(r3)
+    # --- Handles multiple rule 3 findings for different tags ---
+    r3_findings = await _rule3_storage_mismatch(conn, bucket, rules.storage_mismatch)
+    for finding in r3_findings:
+        if finding.action != S3Action.CLEAN:
+            results.append(finding)
 
     return results
 
@@ -114,47 +116,50 @@ async def _rule2_abandoned(
 async def _rule3_storage_mismatch(
     conn: asyncpg.Connection,
     bucket: dict,
-    rules,
-) -> S3FindingResult:
-    resource_id = int(bucket["resource_id"])
-    bucket_name = bucket["bucket_name"]
-    size_bytes = bucket.get("size_bytes", 0) or 0
+    rules: S3StorageMismatchRules,
+) -> list[S3FindingResult]:
+    # Fetch all sample groups (tags/prefixes) for this bucket
+    samples = await get_latest_object_samples(conn, bucket["resource_id"])
+    
+    if not samples:
+        return [_clean(bucket["bucket_name"], S3WasteType.STORAGE_MISMATCH)]
 
-    sample = await get_latest_object_sample(conn, resource_id)
-    if sample is None:
-        return _clean(bucket_name, S3WasteType.STORAGE_MISMATCH)
+    findings = []
+    
+    for sample in samples:
+        if sample["pct_older_than_90_days"] > rules.pct_older_90_days_threshold:
+            
+            savings = _estimate_savings(
+                size_bytes=bucket["size_bytes"], 
+                pct_in_standard=sample["pct_in_standard"], 
+                rules=rules
+            )
+            
+            # Pass the specific grouping_key to the lifecycle generator
+            policy = _generate_lifecycle_policy(bucket["bucket_name"], sample["grouping_key"])
 
-    pct_older_90 = sample["pct_older_than_90_days"]
-    pct_standard = sample["pct_in_standard"]
-    sample_size = sample["sample_size"]
+            findings.append(
+                S3FindingResult(
+                    bucket_name=bucket["bucket_name"],
+                    grouping_key=sample["grouping_key"],  # Store the tag
+                    action=S3Action.RECOMMEND_LIFECYCLE,
+                    waste_type=S3WasteType.STORAGE_MISMATCH,
+                    detection_window=f"{rules.window_days}d",
+                    object_count=sample["sample_size"],
+                    pct_older_90_days=sample["pct_older_than_90_days"],
+                    estimated_monthly_savings=savings,
+                    recommended_action=f"Apply Tiered Lifecycle for {sample['grouping_key']}",
+                    lifecycle_policy_json=policy,
+                    detection_reason=(
+                        f"Target '{sample['grouping_key']}' has {sample['pct_older_than_90_days']:.1f}% "
+                        f"objects older than 90 days (threshold: {rules.pct_older_90_days_threshold}%)."
+                    ),
+                )
+            )
 
-    if (
-        pct_older_90 >= rules.pct_older_90_days_threshold
-        and pct_standard >= rules.min_pct_in_standard
-    ):
-        savings = _estimate_savings(size_bytes, pct_standard, rules)
-        policy = _generate_lifecycle_policy(bucket_name)
-
-        return S3FindingResult(
-            bucket_name=bucket_name,
-            action=S3Action.RECOMMEND_LIFECYCLE,
-            waste_type=S3WasteType.STORAGE_MISMATCH,
-            detection_window=f"{rules.window_days} days",
-            pct_older_90_days=pct_older_90,
-            estimated_monthly_savings=savings,
-            recommended_action=(
-                "Apply tiered lifecycle policy: transition to Standard-IA at 30 days, "
-                "Glacier at 90 days. Estimated monthly savings shown."
-            ),
-            lifecycle_policy_json=policy,
-            detection_reason=(
-                f"{pct_older_90:.1f}% of sampled objects (sample size: {sample_size}) are older than 90 days "
-                f"and {pct_standard:.1f}% remain in Standard storage. Objects are paying Standard prices "
-                "despite low access frequency."
-            ),
-        )
-
-    return _clean(bucket_name, S3WasteType.STORAGE_MISMATCH)
+    if not findings:
+        return [_clean(bucket["bucket_name"], S3WasteType.STORAGE_MISMATCH)]
+    return findings
 
 
 def _clean(bucket_name: str, waste_type: S3WasteType) -> S3FindingResult:
@@ -166,13 +171,32 @@ def _clean(bucket_name: str, waste_type: S3WasteType) -> S3FindingResult:
     )
 
 
-def _generate_lifecycle_policy(bucket_name: str) -> dict:
+def _generate_lifecycle_policy(bucket_name: str, grouping_key: str = "ALL") -> dict:
+    
+    # 1. Parse the grouping key into a surgical AWS Filter
+    if grouping_key.startswith("tag:"):
+        key_val = grouping_key[4:].split("=", 1)
+        if len(key_val) == 2:
+            filter_dict = {"Tag": {"Key": key_val[0], "Value": key_val[1]}}
+        else:
+            filter_dict = {"Prefix": ""} 
+            
+    elif grouping_key.startswith("prefix:"):
+        # Example: 'prefix:/logs/'
+        filter_dict = {"Prefix": grouping_key[7:]}
+    else:
+        # Default bucket-level fallback
+        filter_dict = {"Prefix": ""}
+
+    # 2. Create a clean ID for the AWS Rule
+    safe_id = grouping_key.replace(":", "-").replace("=", "-").replace("/", "-")
+
     return {
         "Rules": [
             {
-                "ID": f"finops-tiered-lifecycle-{bucket_name}",
+                "ID": f"finops-tiered-lifecycle-{safe_id}",
                 "Status": "Enabled",
-                "Filter": {"Prefix": ""},
+                "Filter": filter_dict,
                 "Transitions": [
                     {"Days": 30, "StorageClass": "STANDARD_IA"},
                     {"Days": 90, "StorageClass": "GLACIER"},

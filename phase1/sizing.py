@@ -31,7 +31,6 @@ def calculate_recommended_type(
     steps_dropped = 0
 
     for candidate in candidates_below:
-        steps_dropped += 1
 
         if steps_dropped > rules.max_drop_steps:
             break
@@ -56,14 +55,15 @@ def calculate_recommended_type(
         if candidate.get("max_network_io_gbps"):
             candidate_net_mbps = float(candidate["max_network_io_gbps"]) * 1024
             if observed_network_mbps > (candidate_net_mbps * (rules.io_safety_ceiling / 100.0)):
-                continue
+                break
 
         if candidate.get("max_disk_io_mbps"):
             candidate_disk_mbps = float(candidate["max_disk_io_mbps"])
             if observed_disk_mbps > (candidate_disk_mbps * (rules.io_safety_ceiling / 100.0)):
-                continue
+                break
         # ── Passed ────────────────────────────────────────────────────────
         waste_per_month = (current_price_per_hour - candidate_price) * 24 * 30
+        steps_dropped += 1
 
         best_candidate = {
             "recommended_type": candidate["instance_type"],
@@ -75,5 +75,6 @@ def calculate_recommended_type(
             "waste_per_month": round(waste_per_month, 2),
             "steps_dropped": steps_dropped,
         }
+        break
 
     return best_candidate

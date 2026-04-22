@@ -24,6 +24,7 @@ class S3Action(str, Enum):
 
 class S3FindingResult(BaseModel):
     bucket_name: str
+    grouping_key: str = "ALL"
 
     action: S3Action
     waste_type: S3WasteType
