@@ -55,15 +55,13 @@ async def get_bucket_request_total(
     return float(row["total_requests"])
 
 
-async def get_latest_object_samples(
-    conn: asyncpg.Connection,
-    resource_id: int,
-) -> list[dict]:
+async def get_latest_object_samples(conn: asyncpg.Connection, resource_id: int) -> list[dict]:
     rows = await conn.fetch(
         """
         SELECT DISTINCT ON (grouping_key)
             grouping_key,
-            sample_size,
+            group_size_bytes,  -- NEW: Sum of object sizes in this group
+            sample_size,       -- (Object count)
             pct_older_than_30_days,
             pct_older_than_90_days,
             pct_older_than_180_days,
@@ -82,6 +80,7 @@ async def get_latest_object_samples(
         {
             "grouping_key": row["grouping_key"],
             "sample_size": int(row["sample_size"]),
+            "group_size_bytes": int(row["group_size_bytes"]), #total size of objects in this group ( tag) we shuld be able to get this if we use s3 inventory 
             "pct_older_than_30_days": float(row["pct_older_than_30_days"]),
             "pct_older_than_90_days": float(row["pct_older_than_90_days"]),
             "pct_older_than_180_days": float(row["pct_older_than_180_days"]),
@@ -91,3 +90,27 @@ async def get_latest_object_samples(
         }
         for row in rows
     ]
+async def get_regional_s3_pricing(conn: asyncpg.Connection, region: str) -> dict[str, float]:
+    """
+    Fetches the actual S3 storage prices for a specific region from the DB.
+    Returns a dictionary mapping storage_class to price_per_gb_month.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT storage_class, price_per_gb_month
+        FROM s3_pricing
+        WHERE region = $1
+        """,
+        region
+    )
+    
+    # If a region is missing in DB, fallback to us-east-1 standard pricing to avoid crashes
+    if not rows:
+        return {
+            "Standard": 0.023,
+            "Standard-IA": 0.0125,
+            "Glacier": 0.0036,
+            "Deep Archive": 0.00099
+        }
+        
+    return {r["storage_class"]: float(r["price_per_gb_month"]) for r in rows}

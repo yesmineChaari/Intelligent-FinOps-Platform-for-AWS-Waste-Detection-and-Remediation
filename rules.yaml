@@ -75,7 +75,6 @@ s3:
     max_total_requests: 10
   storage_mismatch:
     window_days: 90
-    pct_older_90_days_threshold: 50.0
-    min_pct_in_standard: 80.0
-    standard_price_per_gb: 0.023
-    glacier_price_per_gb: 0.004
+    pct_older_30_days_threshold: 50.0
+    pct_older_90_days_threshold: 30.0
+    pct_older_180_days_threshold: 20.0

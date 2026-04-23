@@ -26,7 +26,4 @@ def load_rules(path: str = "rules.yaml") -> Rules:
 
     with open(rules_path) as f:
         raw = yaml.safe_load(f)
-
-    # Pydantic validates every field and type — raises ValidationError with
-    # a clear message if anything is wrong before a single DB query runs
     return Rules(**raw)

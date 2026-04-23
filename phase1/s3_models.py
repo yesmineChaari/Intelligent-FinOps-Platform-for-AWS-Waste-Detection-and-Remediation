@@ -52,10 +52,10 @@ class S3AbandonedRules(BaseModel):
 
 class S3StorageMismatchRules(BaseModel):
     window_days: int
+    pct_older_30_days_threshold: float
     pct_older_90_days_threshold: float
-    min_pct_in_standard: float
-    standard_price_per_gb: float
-    glacier_price_per_gb: float
+    pct_older_180_days_threshold: float
+
 
 
 class S3Rules(BaseModel):

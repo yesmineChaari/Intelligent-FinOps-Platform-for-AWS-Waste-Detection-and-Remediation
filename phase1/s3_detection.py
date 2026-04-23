@@ -6,7 +6,7 @@ Rules are independent: multiple findings can be produced for one bucket.
 import asyncpg
 
 from .s3_models import S3Action, S3FindingResult, S3Rules, S3StorageMismatchRules, S3WasteType
-from .s3_queries import get_all_buckets, get_bucket_request_total, get_latest_object_samples
+from .s3_queries import get_all_buckets, get_bucket_request_total, get_latest_object_samples, get_regional_s3_pricing
 
 
 async def run_s3_phase1(
@@ -113,54 +113,25 @@ async def _rule2_abandoned(
     return _clean(bucket_name, S3WasteType.ABANDONED)
 
 
-async def _rule3_storage_mismatch(
-    conn: asyncpg.Connection,
-    bucket: dict,
-    rules: S3StorageMismatchRules,
-) -> list[S3FindingResult]:
-    # Fetch all sample groups (tags/prefixes) for this bucket
-    samples = await get_latest_object_samples(conn, bucket["resource_id"])
+
+
+def _estimate_multi_tier_savings(size_bytes: int, group: dict, rules: S3StorageMismatchRules) -> float:
+    """Calculates potential savings by moving 'Standard' data into appropriate tiers."""
+    total_gb = size_bytes / (1024 ** 3)
+    standard_gb = (group["pct_in_standard"] / 100.0) * total_gb
     
-    if not samples:
-        return [_clean(bucket["bucket_name"], S3WasteType.STORAGE_MISMATCH)]
+    # Simple weighted calculation:
+    # We estimate how much Standard data can be shifted to the cheapest applicable tier
+    if group["pct_older_than_180_days"] > 20: # Example logic: focus on Deep Archive if significant
+        target_price = rules.deep_archive_price_per_gb
+    elif group["pct_older_than_90_days"] > 20:
+        target_price = rules.glacier_price_per_gb
+    else:
+        target_price = rules.ia_price_per_gb
 
-    findings = []
-    
-    for sample in samples:
-        if sample["pct_older_than_90_days"] > rules.pct_older_90_days_threshold:
-            
-            savings = _estimate_savings(
-                size_bytes=bucket["size_bytes"], 
-                pct_in_standard=sample["pct_in_standard"], 
-                rules=rules
-            )
-            
-            # Pass the specific grouping_key to the lifecycle generator
-            policy = _generate_lifecycle_policy(bucket["bucket_name"], sample["grouping_key"])
+    monthly_savings = standard_gb * (rules.standard_price_per_gb - target_price)
 
-            findings.append(
-                S3FindingResult(
-                    bucket_name=bucket["bucket_name"],
-                    grouping_key=sample["grouping_key"],  # Store the tag
-                    action=S3Action.RECOMMEND_LIFECYCLE,
-                    waste_type=S3WasteType.STORAGE_MISMATCH,
-                    detection_window=f"{rules.window_days}d",
-                    object_count=sample["sample_size"],
-                    pct_older_90_days=sample["pct_older_than_90_days"],
-                    estimated_monthly_savings=savings,
-                    recommended_action=f"Apply Tiered Lifecycle for {sample['grouping_key']}",
-                    lifecycle_policy_json=policy,
-                    detection_reason=(
-                        f"Target '{sample['grouping_key']}' has {sample['pct_older_than_90_days']:.1f}% "
-                        f"objects older than 90 days (threshold: {rules.pct_older_90_days_threshold}%)."
-                    ),
-                )
-            )
-
-    if not findings:
-        return [_clean(bucket["bucket_name"], S3WasteType.STORAGE_MISMATCH)]
-    return findings
-
+    return round(max(0, monthly_savings), 2)
 
 def _clean(bucket_name: str, waste_type: S3WasteType) -> S3FindingResult:
     return S3FindingResult(
@@ -192,31 +163,102 @@ def _generate_lifecycle_policy(bucket_name: str, grouping_key: str = "ALL") -> d
     safe_id = grouping_key.replace(":", "-").replace("=", "-").replace("/", "-")
 
     return {
-        "Rules": [
-            {
-                "ID": f"finops-tiered-lifecycle-{safe_id}",
-                "Status": "Enabled",
-                "Filter": filter_dict,
-                "Transitions": [
-                    {"Days": 30, "StorageClass": "STANDARD_IA"},
-                    {"Days": 90, "StorageClass": "GLACIER"},
-                ],
-                "NoncurrentVersionTransitions": [
-                    {"NoncurrentDays": 30, "StorageClass": "STANDARD_IA"},
-                    {"NoncurrentDays": 90, "StorageClass": "GLACIER"},
-                ],
-            }
-        ]
+        "Rules": [{
+            "ID": f"finops-lifecycle-{safe_id}",
+            "Status": "Enabled",
+            "Filter": filter_dict,
+            "Transitions": [
+                {"Days": 30, "StorageClass": "STANDARD_IA"},
+                {"Days": 90, "StorageClass": "GLACIER"},
+                {"Days": 180, "StorageClass": "DEEP_ARCHIVE"} # NEW
+            ],
+            "NoncurrentVersionTransitions": [
+                {"NoncurrentDays": 30, "StorageClass": "STANDARD_IA"},
+                {"NoncurrentDays": 90, "StorageClass": "GLACIER"}
+            ]
+        }]
     }
 
+async def _rule3_storage_mismatch(
+    conn: asyncpg.Connection,
+    bucket: dict,
+    rules: S3StorageMismatchRules,
+) -> list[S3FindingResult]:
+    
+    groups = await get_latest_object_samples(conn, bucket["resource_id"])
+    
+    if not groups:
+        return [_clean(bucket["bucket_name"], S3WasteType.STORAGE_MISMATCH)]
 
-def _estimate_savings(size_bytes: int, pct_in_standard: float, rules) -> float:
+    # 1. Fetch the exact pricing for THIS bucket's region
+    pricing = await get_regional_s3_pricing(conn, bucket["region"])
+    findings = []
+    
+    for group in groups:
+        # 2. Check if the group violates ANY of the aging thresholds
+        is_wasteful = (
+            group["pct_older_than_180_days"] > rules.pct_older_180_days_threshold or
+            group["pct_older_than_90_days"] > rules.pct_older_90_days_threshold or
+            group["pct_older_than_30_days"] > rules.pct_older_30_days_threshold
+        )
+
+        if is_wasteful:
+            # 3. Calculate savings using REAL regional pricing and the SPECIFIC group size
+            savings = _estimate_dynamic_savings(
+                size_bytes=group["group_size_bytes"],
+                group=group,
+                pricing=pricing,
+                rules=rules
+            )
+            
+            policy = _generate_lifecycle_policy(bucket["bucket_name"], group["grouping_key"])
+
+            findings.append(
+                S3FindingResult(
+                    bucket_name=bucket["bucket_name"],
+                    grouping_key=group["grouping_key"],
+                    action=S3Action.RECOMMEND_LIFECYCLE,
+                    waste_type=S3WasteType.STORAGE_MISMATCH,
+                    detection_window=f"{rules.window_days}d",
+                    object_count=group["sample_size"],
+                    estimated_monthly_savings=savings,
+                    recommended_action=f"Apply Tiered Lifecycle for {group['grouping_key']}",
+                    lifecycle_policy_json=policy,
+                    detection_reason=(
+                        f"Target '{group['grouping_key']}' aging breakdown: "
+                        f"{group['pct_older_than_30_days']}% >30d, "
+                        f"{group['pct_older_than_90_days']}% >90d, "
+                        f"{group['pct_older_than_180_days']}% >180d."
+                    ),
+                )
+            )
+
+    if not findings:
+        return [_clean(bucket["bucket_name"], S3WasteType.STORAGE_MISMATCH)]
+        
+    return findings
+
+
+def _estimate_dynamic_savings(size_bytes: int, group: dict, pricing: dict, rules: S3StorageMismatchRules) -> float:
+    """Calculates potential savings by moving 'Standard' data into appropriate tiers based on DB pricing."""
     if size_bytes == 0:
         return 0.0
 
     total_gb = size_bytes / (1024 ** 3)
-    standard_gb = (pct_in_standard / 100.0) * total_gb
-    price_diff = rules.standard_price_per_gb - rules.glacier_price_per_gb
-    monthly_saving = standard_gb * price_diff
+    standard_gb = (group["pct_in_standard"] / 100.0) * total_gb
+    
+    # Extract DB prices (with fallbacks if the dictionary somehow missed a tier)
+    std_price = pricing.get("Standard", 0.023)
+    
+    # Determine the 'deepest' tier this data qualifies for based on the thresholds
+    if group["pct_older_than_180_days"] > rules.pct_older_180_days_threshold:
+        target_price = pricing.get("Deep Archive", 0.00099)
+    elif group["pct_older_than_90_days"] > rules.pct_older_90_days_threshold:
+        target_price = pricing.get("Glacier", 0.0036)
+    else:
+        target_price = pricing.get("Standard-IA", 0.0125)
 
-    return round(monthly_saving, 2)
+    # Monthly savings = Gb in standard * (Cost of Standard - Cost of new Tier)
+    monthly_savings = standard_gb * (std_price - target_price)
+    
+    return round(max(0, monthly_savings), 2)
