@@ -13,6 +13,7 @@ import os
 import json
 import logging
 import sys
+from pathlib import Path
 
 from phase1.loader import load_rules
 from phase1.detection import run_phase1
@@ -170,7 +171,13 @@ async def main():
             s3_output.append(row)
 
         log.info("Phase 1 Output Payload (JSON):")
-        print(json.dumps({"ec2": ec2_output, "s3": s3_output}, indent=2, default=str))
+        phase1_payload_str = json.dumps({"ec2": ec2_output, "s3": s3_output}, indent=2, default=str)
+        print(phase1_payload_str)
+        try:
+            Path("phase1_output.json").write_text(phase1_payload_str, encoding="utf-8")
+            log.info("Phase 1 output written to phase1_output.json")
+        except Exception as exc:
+            log.warning("Failed to write Phase 1 output file: %s", exc)
 
         # ── Phase 2 ───────────────────────────────────────────────────────
         log.info("Phase 2 starting — relationship graph guardrails...")
@@ -194,7 +201,59 @@ async def main():
             phase2_output.append(row)
 
         log.info("Phase 2 Output Payload (JSON):")
-        print(json.dumps(phase2_output, indent=2, default=str))
+        phase2_payload_str = json.dumps(phase2_output, indent=2, default=str)
+        print(phase2_payload_str)
+        try:
+            Path("phase2_output.json").write_text(phase2_payload_str, encoding="utf-8")
+            log.info("Phase 2 output written to phase2_output.json")
+        except Exception as exc:
+            log.warning("Failed to write Phase 2 output file: %s", exc)
+
+        # ── Phase 3 ───────────────────────────────────────────────────────
+        # IMPORTANT: Phase 1/2 outputs above remain unchanged.
+        log.info("Phase 3 starting — LLM evaluation...")
+        try:
+            from phase3.llm_phase3 import run_phase3_llm
+
+            phase3_output = await asyncio.to_thread(
+                run_phase3_llm,
+                ec2_results,
+                phase2_results,
+                s3_results,
+                os.environ.get("PHASE3_MODEL") or None,
+            )
+
+            llm_inputs = [
+                {
+                    "scenario_type": run.get("scenario_type"),
+                    "scenario": run.get("scenario"),
+                }
+                for run in (phase3_output.get("runs") or [])
+            ]
+            log.info("Phase 3 LLM Input Scenarios (JSON):")
+            print(json.dumps(llm_inputs, indent=2, default=str))
+
+            parsed_outputs = [
+                {
+                    "scenario_type": run.get("scenario_type"),
+                    "parsed": (run.get("llm") or {}).get("parsed"),
+                    "parse_error": (run.get("llm") or {}).get("parse_error"),
+                }
+                for run in (phase3_output.get("runs") or [])
+            ]
+            log.info("Phase 3 Parsed LLM Output (JSON):")
+            print(json.dumps(parsed_outputs, indent=2, default=str))
+
+            log.info("Phase 3 Output Payload (JSON):")
+            phase3_payload_str = json.dumps(phase3_output, indent=2, default=str)
+            print(phase3_payload_str)
+            try:
+                Path("phase3_output.json").write_text(phase3_payload_str, encoding="utf-8")
+                log.info("Phase 3 output written to phase3_output.json")
+            except Exception as exc:
+                log.warning("Failed to write Phase 3 output file: %s", exc)
+        except Exception as exc:
+            log.exception("Phase 3 failed: %s", exc)
 
     finally:
         await conn.close()
