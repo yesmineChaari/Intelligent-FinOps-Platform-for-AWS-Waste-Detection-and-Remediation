@@ -19,6 +19,13 @@ from phase1.loader import load_rules
 from phase1.detection import run_phase1
 from phase1.s3_detection import run_s3_phase1
 from phase2 import run_phase2
+from persistence import (
+    complete_optimization_run,
+    save_phase1_outputs,
+    save_phase2_outputs,
+    save_phase3_outputs,
+    start_optimization_run,
+)
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -27,6 +34,35 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger(__name__)
+
+
+def _decode_stream_fields(fields: dict) -> dict[str, str]:
+    decoded: dict[str, str] = {}
+    for key, value in fields.items():
+        key_str = key.decode() if isinstance(key, bytes) else str(key)
+        value_str = value.decode() if isinstance(value, bytes) else str(value)
+        decoded[key_str] = value_str
+    return decoded
+
+
+def _extract_workspace_key(trigger_context: dict[str, str]) -> str | None:
+    payload = trigger_context.get("payload")
+    if payload:
+        try:
+            payload_data = json.loads(payload)
+        except json.JSONDecodeError:
+            payload_data = None
+        if isinstance(payload_data, dict):
+            value = payload_data.get("workspace_key") or payload_data.get("terraform_workspace_key")
+            if value:
+                return str(value)
+
+    return (
+        trigger_context.get("workspace_key")
+        or trigger_context.get("terraform_workspace_key")
+        or os.environ.get("WORKSPACE_KEY")
+        or os.environ.get("TERRAFORM_WORKSPACE_KEY")
+    )
 
 
 def _phase1_metrics_payload(result) -> dict[str, float | int | bool | str]:
@@ -73,7 +109,7 @@ def _s3_metrics_payload(result) -> dict[str, float | int | bool]:
     return payload
 
 
-async def wait_for_trigger(redis_client: aioredis.Redis) -> None:
+async def wait_for_trigger(redis_client: aioredis.Redis) -> dict[str, str]:
     """Block until ingestion_complete arrives on the Redis Stream."""
     log.info("Agent 2 waiting for 'ingestion_complete' on Redis Stream...")
     while True:
@@ -89,7 +125,7 @@ async def wait_for_trigger(redis_client: aioredis.Redis) -> None:
                     event = fields.get(b"event", b"").decode()
                     if event == "ingestion_complete":
                         log.info(f"Received ingestion_complete (entry {entry_id}). Triggering Phase 1...")
-                        return
+                        return _decode_stream_fields(fields)
 
 
 async def main():
@@ -113,15 +149,28 @@ async def main():
     # ── Wait for Agent 1 to finish ────────────────────────────────────────
     skip_trigger = os.environ.get("SKIP_REDIS_TRIGGER", "").lower() in ("1", "true", "yes")
     if not skip_trigger:
-        await wait_for_trigger(redis_client)
+        trigger_context = await wait_for_trigger(redis_client)
     else:
         log.info("SKIP_REDIS_TRIGGER is set; running Phase 1 immediately without waiting on Redis trigger.")
+        trigger_context = {}
 
     # ── Connect to Neon DB ────────────────────────────────────────────────
     log.info("Connecting to Neon DB...")
     conn = await asyncpg.connect(neon_db_url)
+    run_id: int | None = None
+    run_status = "completed"
+    run_error: str | None = None
 
     try:
+        workspace_key = _extract_workspace_key(trigger_context)
+        run_id = await start_optimization_run(
+            conn,
+            workspace_key=workspace_key,
+            trigger_context=trigger_context,
+            phase3_model_key=os.environ.get("PHASE3_MODEL"),
+        )
+        log.info("Optimization run started: id=%s workspace_key=%s", run_id, workspace_key or "none")
+
         # ── Phase 1 ───────────────────────────────────────────────────────
         log.info("Starting EC2 Phase 1 — Statistical Waste Detection...")
         ec2_results = await run_phase1(conn, rules)
@@ -178,6 +227,11 @@ async def main():
             log.info("Phase 1 output written to phase1_output.json")
         except Exception as exc:
             log.warning("Failed to write Phase 1 output file: %s", exc)
+        try:
+            await save_phase1_outputs(conn, run_id, ec2_results, s3_results)
+            log.info("Phase 1 outputs saved for optimization_run_id=%s", run_id)
+        except Exception as exc:
+            log.warning("Failed to persist Phase 1 outputs: %s", exc)
 
         # ── Phase 2 ───────────────────────────────────────────────────────
         log.info("Phase 2 starting — relationship graph guardrails...")
@@ -208,6 +262,11 @@ async def main():
             log.info("Phase 2 output written to phase2_output.json")
         except Exception as exc:
             log.warning("Failed to write Phase 2 output file: %s", exc)
+        try:
+            await save_phase2_outputs(conn, run_id, phase2_results)
+            log.info("Phase 2 outputs saved for optimization_run_id=%s", run_id)
+        except Exception as exc:
+            log.warning("Failed to persist Phase 2 outputs: %s", exc)
 
         # ── Phase 3 ───────────────────────────────────────────────────────
         # IMPORTANT: Phase 1/2 outputs above remain unchanged.
@@ -252,10 +311,30 @@ async def main():
                 log.info("Phase 3 output written to phase3_output.json")
             except Exception as exc:
                 log.warning("Failed to write Phase 3 output file: %s", exc)
+            try:
+                await save_phase3_outputs(
+                    conn,
+                    run_id,
+                    phase3_output,
+                    phase2_results=phase2_results,
+                    s3_results=s3_results,
+                )
+                log.info("Phase 3 LLM outputs saved for optimization_run_id=%s", run_id)
+            except Exception as exc:
+                log.warning("Failed to persist Phase 3 outputs: %s", exc)
         except Exception as exc:
             log.exception("Phase 3 failed: %s", exc)
 
+    except Exception as exc:
+        run_status = "failed"
+        run_error = str(exc)
+        raise
     finally:
+        if run_id is not None:
+            try:
+                await complete_optimization_run(conn, run_id, status=run_status, error_message=run_error)
+            except Exception as exc:
+                log.warning("Failed to mark optimization run complete: %s", exc)
         await conn.close()
         await redis_client.aclose()
 

@@ -5,3 +5,7 @@ __pycache__/
 .phase2_test_report_llm.txt
 .project_context_summary.txt
 AGENTS.md
+.gitignore
+phase1_output.json
+phase2_output.json
+phase3_output.json

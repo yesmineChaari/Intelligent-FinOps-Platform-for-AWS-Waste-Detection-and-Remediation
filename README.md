@@ -115,3 +115,7 @@ python scorer.py
 ## Development Notes
 
 Keep root agent changes separate from benchmark changes when possible. Add tests under `tests/` for converter behavior, guardrail changes, scenario shape changes, and any field-name compatibility changes. Do not commit `.env`, provider keys, database URLs, Redis URLs, or temporary runtime outputs unless they are intentionally reviewed artifacts.
+
+## Output Persistence
+
+Each run is tracked in `optimization_runs`. Phase 1 EC2/S3 outputs are saved in `phase1_ec2_outputs` and `phase1_s3_outputs`; Phase 2 EC2 guardrail output is saved in `phase2_ec2_outputs`. Phase 3 LLM output is saved separately into `waste` for EC2 and `s3_waste` for S3. See `docs/output_persistence.md`.
