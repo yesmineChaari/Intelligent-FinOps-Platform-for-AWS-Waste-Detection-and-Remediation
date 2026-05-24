@@ -32,14 +32,13 @@ class TestPhase3Converter(unittest.TestCase):
 
         p2 = Phase2Result(
             resource_id=1,
-            resource_name="i-test-1",
+            instance_name="i-test-1",
             role="steady",
             waste_type=WasteType.IDLE,
             phase1_action=WasteAction.STOP,
             action=WasteAction.STOP,
             detection_reason="idle instance",
-            phase2_action=WasteAction.STOP,
-            blast_radius_score=1,
+            blast_radius=1,
             relationship_count=0,
         )
 
@@ -47,6 +46,11 @@ class TestPhase3Converter(unittest.TestCase):
         self.assertIn("flagged_resources", scenario)
         self.assertEqual(len(scenario["flagged_resources"]), 1)
         self.assertEqual(scenario["flagged_resources"][0]["agent2_decision"]["action"], "STOP")
+        dumped = p2.model_dump()
+        self.assertIn("instance_name", dumped)
+        self.assertIn("blast_radius", dumped)
+        self.assertNotIn("resource_name", dumped)
+        self.assertNotIn("blast_radius_score", dumped)
 
     def test_skip_maps_to_keep(self) -> None:
         p1 = Phase1Result(
@@ -59,17 +63,16 @@ class TestPhase3Converter(unittest.TestCase):
         )
         p2 = Phase2Result(
             resource_id=2,
-            resource_name="i-test-2",
+            instance_name="i-test-2",
             role="steady",
             waste_type=WasteType.IDLE,
             phase1_action=WasteAction.STOP,
-            action=WasteAction.STOP,
+            action=WasteAction.SKIP,
             detection_reason="idle instance",
-            phase2_action=WasteAction.SKIP,
             phase2_action_changed=True,
             phase2_action_reason="guardrail: high blast radius",
-            guardrail_reason="graph suggests critical dependency",
-            blast_radius_score=99,
+            block_reason="graph suggests critical dependency",
+            blast_radius=99,
             relationship_count=20,
         )
 
@@ -127,13 +130,12 @@ class TestPhase3Converter(unittest.TestCase):
         )
         p2 = Phase2Result(
             resource_id=3,
-            resource_name="i-test-3",
+            instance_name="i-test-3",
             role="steady",
             waste_type=WasteType.OVERSIZED,
             phase1_action=WasteAction.DOWNSIZE,
             action=WasteAction.DOWNSIZE,
             detection_reason="oversized",
-            phase2_action=WasteAction.DOWNSIZE,
         )
 
         scenario = build_ec2_scenario([p1], [p2])

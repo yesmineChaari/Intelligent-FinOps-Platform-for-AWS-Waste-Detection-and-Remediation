@@ -54,9 +54,9 @@ def build_ec2_scenario(
 
         p1 = phase1_by_id.get(rid)
 
-        phase2_action = _enum_value(getattr(p2, "phase2_action", None))
-        phase1_action = _enum_value(_coalesce(getattr(p1, "action", None), getattr(p2, "action", None)))
-        action = phase2_action or phase1_action
+        agent2_action = _enum_value(_coalesce(getattr(p2, "phase2_action", None), getattr(p2, "action", None)))
+        phase1_action = _enum_value(_coalesce(getattr(p1, "action", None), getattr(p2, "phase1_action", None)))
+        action = agent2_action or phase1_action
         if action in ("SKIP", "REVIEW"):
             action = "KEEP"
         elif action == "CLEAN":
@@ -72,7 +72,7 @@ def build_ec2_scenario(
             else:
                 detection_reason = f"Phase2: {phase2_reason}"
 
-        block_reason = _coalesce(getattr(p2, "guardrail_reason", None), None)
+        block_reason = _coalesce(getattr(p2, "block_reason", None), getattr(p2, "guardrail_reason", None))
 
         agent2_decision: dict[str, Any] = {
             "action": action,
@@ -132,18 +132,26 @@ def build_ec2_scenario(
         if recommended_type:
             agent2_decision["recommended_type"] = str(recommended_type)
 
-        blast_radius = _coalesce(getattr(p2, "blast_radius_score", None), None)
+        blast_radius = _coalesce(getattr(p2, "blast_radius", None), getattr(p2, "blast_radius_score", None))
         if blast_radius is not None:
             try:
                 agent2_decision["blast_radius"] = int(blast_radius)
             except (TypeError, ValueError):
                 pass
 
-        resource_name = _coalesce(getattr(p1, "resource_name", None), getattr(p2, "resource_name", None))
+        resource_name = _coalesce(
+            getattr(p2, "instance_name", None),
+            getattr(p1, "resource_name", None),
+            getattr(p2, "resource_name", None),
+        )
         instance_id = str(_coalesce(resource_name, rid))
         instance_name = str(_coalesce(resource_name, instance_id))
 
-        current_instance_type = _coalesce(getattr(p1, "current_instance_type", None), getattr(p2, "current_instance_type", None))
+        current_instance_type = _coalesce(
+            getattr(p2, "instance_type", None),
+            getattr(p1, "current_instance_type", None),
+            getattr(p2, "current_instance_type", None),
+        )
 
         resource_entry: dict[str, Any] = {
             "instance_id": instance_id,
