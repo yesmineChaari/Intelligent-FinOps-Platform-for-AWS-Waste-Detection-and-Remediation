@@ -1,151 +1,172 @@
 # AWS FinOps Agent Pipeline
 
-This repository contains a Python pipeline that detects AWS cost waste, applies graph-aware guardrails, and optionally sends the final Agent 2 decisions to an LLM-based validation layer. The root project is the live agent. The `llm_benchmarking/IaC-Evaluation-Pipeline/` folder is an embedded benchmark used by Phase 3.
+This project detects AWS cost waste, applies deterministic guardrails, and can
+send resulting recommendations through an LLM/Terraform review stage. The
+preferred deployment is a Redis-coordinated, multi-container pipeline; the
+original single-process entrypoint remains available for local compatibility.
 
-## Repository Tree
+## Architecture
+
+```text
+Agent0 --ingestion_complete--> Redis --> Agent1 --deterministic_complete(run_id)--> Redis --> Agent2
+  |                                      |                                              |
+  +-------------------------- External Postgres/Neon ----------------------------------+
+                               stored inputs, outputs, and run status
+```
+
+Redis carries event metadata only. Inventory, deterministic outputs, and Phase
+3 results are stored in Postgres/Neon.
+
+| Component | Responsibility | Entrypoint |
+| --- | --- | --- |
+| `agent0` | LocalStack/AWS discovery and metric ingestion; publishes `ingestion_complete` | `agent0/app/main.py` |
+| `agent1` | EC2/S3 Phase 1 detection and EC2 Phase 2 guardrails | `python -m agent1.main` |
+| `agent2` | Phase 3 LLM/Terraform evaluation and optional PR flow | `python -m agent2.main` |
+| `shared` | DB, Redis events, settings, contracts, and persistence | Python package |
+| `main.py` | Legacy one-process Phase 1 -> Phase 2 -> Phase 3 execution | `python main.py` |
+
+## Source Layout
 
 ```text
 .
-|-- main.py                         # Async entrypoint for Phase 1, Phase 2, and Phase 3
-|-- rules.yaml                      # Detection thresholds, sizing limits, and guardrail rules
-|-- requirements.txt                # Root agent Python dependencies
-|-- AGENTS.md                       # Contributor and coding guidelines
-|-- phase1/                         # Raw waste detection and sizing logic
-|   |-- loader.py                   # Loads and validates rules.yaml
-|   |-- models.py                   # EC2 detection result and rule models
-|   |-- queries.py                  # EC2 inventory and metrics queries
-|   |-- detection.py                # EC2 zombie, idle, oversized, and clean detection
-|   |-- sizing.py                   # EC2 downsize recommendation helpers
-|   |-- s3_models.py                # S3 detection result and rule models
-|   |-- s3_queries.py               # S3 inventory, metrics, and sample queries
-|   `-- s3_detection.py             # S3 lifecycle and storage mismatch detection
-|-- phase2/                         # Agent 2 graph guardrails for EC2 findings
-|   |-- models.py                   # RelationshipEdge and Phase2Result models
-|   |-- queries.py                  # Relationship graph query helpers
-|   `-- guardrails.py               # Blast radius scoring and action downgrades
-|-- phase3/                         # LLM validation integration
-|   |-- converter.py                # Converts Phase 1/2 results into benchmark scenarios
-|   `-- llm_phase3.py               # Loads benchmark runners and executes the selected model
-|-- tests/                          # unittest regression tests
-|-- llm_benchmarking/
-|   `-- IaC-Evaluation-Pipeline/    # Embedded LLM benchmark project
-|       |-- pipeline.py             # Runs models against benchmark scenarios
-|       |-- scorer.py               # Builds the leaderboard
-|       |-- config.py               # Model/provider config and paths
-|       |-- scenarios/              # Tier A-D benchmark scenario JSON
-|       |-- prompts/                # Prompt builders and judge prompts
-|       |-- runners/                # Groq, Google, Mistral runner implementations
-|       |-- validators/             # Terraform, Checkov, OPA, NL, and ordering validators
-|       |-- policies/               # OPA Rego policies
-|       |-- outputs/                # Per-model scenario outputs
-|       |-- results/                # Aggregated benchmark results
-|       `-- tf_workspace/           # Terraform validation workspace
-`-- unrelated/                      # Standalone helper scripts not used by main.py
+|-- agent0/app/                  # Ingestion API/scheduler container
+|-- agent1/
+|   |-- main.py                  # Deterministic worker
+|   |-- phase1/                  # Real Phase 1 implementation
+|   `-- phase2/                  # Real Phase 2 implementation
+|-- agent2/
+|   |-- main.py                  # Phase 3 worker
+|   |-- phase3/                  # Real Phase 3 implementation
+|   `-- llm_benchmarking/        # Embedded IaC evaluation workflow
+|-- shared/                      # Shared infrastructure and persistence APIs
+|-- persistence/                 # Legacy compatibility exports to shared.persistence
+|-- phase1/ phase2/ phase3/     # Legacy compatibility wrappers
+|-- llm_benchmarking/            # Legacy benchmark access wrappers
+|-- docker-compose.yml           # Full containerized stack
+|-- rules.yaml                   # Detection and guardrail rules
+|-- tests/                       # unittest coverage
+`-- docs/                        # Operations and persistence documentation
 ```
 
-Ignored local folders and files include `.venv/`, `__pycache__/`, `*.pyc`, and `.env`.
+New code should prefer imports from `agent1.*`, `agent2.*`, and `shared.*`.
+Root `phase1`, `phase2`, `phase3`, `llm_benchmarking`, and `persistence`
+imports remain for legacy compatibility.
 
-## Runtime Flow
+## Containerized Mode
 
-1. `main.py` loads environment variables and `rules.yaml`.
-2. The agent waits for `ingestion_complete` on Redis unless `SKIP_REDIS_TRIGGER=1`.
-3. Phase 1 reads Neon/Postgres data and produces EC2 and S3 findings.
-4. Phase 2 applies relationship guardrails to EC2 findings and emits Agent 2 decisions.
-5. Phase 3 converts EC2 Phase 1 + Phase 2 results, plus S3 Phase 1 results, into LLM benchmark scenarios.
-6. Outputs are printed and written as `phase1_output.json`, `phase2_output.json`, and `phase3_output.json`.
+The root Compose stack runs Redis, LocalStack, Agent0, Agent1, and Agent2.
+Neon/Postgres remains external.
 
-## Phase Responsibilities
+1. Create `.env` locally. Do not commit it.
+2. Provide `DATABASE_URL` for Agent0 and Agent1. Agent2 also accepts
+   `NEON_DATABASE_URL`.
+3. Provide provider or GitHub credentials only when the enabled Phase 3 flow
+   needs them.
 
-Phase 1 owns detection evidence: resource identity, role, waste type, metrics, sizing recommendations, savings, and detection reasons. Its EC2 field names are close to the database shape, for example `resource_name` and `current_instance_type`.
+```powershell
+docker compose build
+docker compose config --quiet
+docker compose up
+```
 
-Phase 2 owns the final Agent 2 decision after guardrails. `Phase2Result` uses Phase 3-compatible public names where equivalents exist: `instance_name`, `instance_type`, `action`, `blast_radius`, and `block_reason`. Phase 2-only fields such as `phase2_action_reason`, `phase2_decision_details`, `relationship_count`, and `skip_write` remain unchanged.
+Useful manual worker modes:
 
-Phase 3 owns scenario shaping. `converter.py` maps Phase 1 evidence and Phase 2 decisions into the benchmark schema expected by `prompts/prompt_builder.py`.
+```powershell
+# Run deterministic processing without waiting for Agent0's Redis event.
+docker compose run --rm -e AGENT1_SKIP_WAIT=1 agent1
 
-## Setup
+# Run Phase 3 for an already persisted run.
+docker compose run --rm -e AGENT2_RUN_ID=123 agent2
+```
+
+See [docs/dockerisation.md](docs/dockerisation.md) for the full smoke-test
+checklist, event payload contract, status lifecycle, and troubleshooting.
+
+## Legacy Mode
+
+`main.py` continues to run Phase 1, Phase 2, and Phase 3 in one process for
+compatibility and local debugging.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-```
-
-For the embedded benchmark:
-
-```powershell
-cd llm_benchmarking\IaC-Evaluation-Pipeline
-pip install -r requirements.txt
-cd tf_workspace
-terraform init
-```
-
-The benchmark also expects Terraform, OPA, Checkov, and provider API keys when those validators or runners are used.
-
-## Configuration
-
-Create a local `.env` file for secrets and runtime settings:
-
-```text
-NEON_DATABASE_URL=postgresql://...
-REDIS_URL=redis://localhost:6379
-RULES_PATH=rules.yaml
-SKIP_REDIS_TRIGGER=1
-PHASE3_MODEL=qwen3-coder-32b
-GROQ_API_KEY=...
-GOOGLE_API_KEY=...
-MISTRAL_API_KEY=...
-PHASE3_TERRAFORM_REPO_URL=https://github.com/Nour-Ben-Hadid/finops-infra.git
-PHASE3_TERRAFORM_REF=main
-PHASE3_TERRAFORM_SUBDIR=
-PHASE3_TERRAFORM_MAX_BYTES=500000
-PHASE3_CREATE_PR=0
-PHASE3_PR_BASE_BRANCH=main
-PHASE3_PR_BRANCH_PREFIX=finops/phase3
-PHASE3_PR_DRAFT=1
-PHASE3_PATCH_MAX_FILES=10
-PHASE3_ALLOW_NEW_TF_FILES=0
-PHASE3_RUN_TERRAFORM_VALIDATE=0
-GITHUB_TOKEN=
-```
-
-`NEON_DATABASE_URL` is required for `main.py`. `REDIS_URL` defaults to `redis://localhost:6379`, and `RULES_PATH` defaults to `rules.yaml`. Terraform repository settings may also arrive in the Redis `ingestion_complete` event as `terraform_repo_url`, `terraform_ref`, and `terraform_subdir` (or `repo_url`, `repo_ref`, and `repo_subdir`).
-
-`PHASE3_CREATE_PR=0` records a patch plan without writing to GitHub. Set it to `1` only to enable branch creation, push, and pull request creation; pull requests are draft by default. `GITHUB_TOKEN` is required only when PR creation is enabled.
-
-## Commands
-
-```powershell
-python -m unittest discover -s tests
+$env:NEON_DATABASE_URL="postgresql://..."
+$env:SKIP_REDIS_TRIGGER="1"
 python main.py
 ```
 
-Run a focused benchmark from the embedded project directory:
+Without `SKIP_REDIS_TRIGGER=1`, the legacy entrypoint waits for an
+`ingestion_complete` event on Redis.
+
+## Configuration
+
+Common configuration values:
+
+| Variable | Used by | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | Agent0, Agent1, Agent2 | External Postgres/Neon connection; required by Agent0 and Agent1 |
+| `NEON_DATABASE_URL` | Agent2, legacy `main.py` | Alternative/legacy database URL |
+| `REDIS_URL` | Agent0, Agent1, Agent2, legacy `main.py` | Redis Stream connection |
+| `RULES_PATH` | Agent1, legacy `main.py` | Rules file; defaults to `rules.yaml` |
+| `AGENT1_SKIP_WAIT` | Agent1 | Run without waiting for `ingestion_complete` |
+| `AGENT2_RUN_ID` | Agent2 | Run Phase 3 manually for a stored run |
+| `PHASE3_MODEL` | Agent2, legacy `main.py` | LLM model selection |
+| `PHASE3_TERRAFORM_REPO_URL`, `PHASE3_TERRAFORM_REF`, `PHASE3_TERRAFORM_SUBDIR` | Agent0/Agent1/Agent2 | Terraform source metadata passed through events or environment |
+| `WORKSPACE_KEY`, `TERRAFORM_WORKSPACE_KEY`, `ACCOUNT_ID` | Agent0 | Optional safe metadata for `ingestion_complete` |
+| `GROQ_API_KEY`, `GOOGLE_API_KEY`, `MISTRAL_API_KEY` | Agent2 | LLM provider credentials when used |
+| `GITHUB_TOKEN` | Agent2 | Optional for public GitHub reads; required for PR creation and authenticated access |
+| `PHASE3_CREATE_PR` | Agent2 | Set to `1` only to enable PR creation; default is disabled |
+
+Never commit `.env`, provider keys, database URLs, Redis credentials, Terraform
+state, or generated secret-bearing output.
+
+## Event Flow
+
+| Stream | Event | Producer | Consumer | Payload |
+| --- | --- | --- | --- | --- |
+| `ingestion_stream` | `ingestion_complete` | Agent0 | Agent1 | `status`, optional workspace/account/Terraform metadata |
+| `optimization_stream` | `deterministic_complete` | Agent1 | Agent2 | `run_id`, `status`, optional safe metadata |
+| `optimization_stream` | `phase3_complete` / `phase3_failed` | Agent2 | Operators/downstream users | `run_id` when known, status, safe failure text |
+
+Agent0 does not publish database contents or AWS inventory through Redis.
+Redis publication failure is logged as a warning and does not undo completed
+ingestion data.
+
+The `deterministic_complete` event status is `phase2_completed`, describing the
+event milestone. At that point the persisted run status is `waiting_phase3`.
+
+## Persistence
+
+An optimization run moves through:
+
+```text
+running_phase1 -> running_phase2 -> waiting_phase3 -> running_phase3 -> completed
+```
+
+Failure outcomes are `failed` for Agent1 failures and `phase3_failed` for
+Agent2 failures. Key tables are `optimization_runs`, `phase1_ec2_outputs`,
+`phase1_s3_outputs`, `phase2_ec2_outputs`, `waste`, and `s3_waste`.
+
+See [docs/output_persistence.md](docs/output_persistence.md) for table roles
+and stored output details.
+
+## Development
+
+Run tests without external services:
 
 ```powershell
+python -m unittest discover -s tests
+```
+
+The Agent2-owned embedded benchmark is located at:
+
+```powershell
+cd agent2\llm_benchmarking\IaC-Evaluation-Pipeline
+pip install -r requirements.txt
 python pipeline.py --models qwen3-coder-32b --scenario A1
 python scorer.py
 ```
 
-## Manual Draft PR Test
-
-This command creates a real draft pull request in the configured Terraform repository. Use `PHASE3_CREATE_PR=0` for a no-write dry run, and never commit a GitHub token to `.env` or source files.
-
-```powershell
-$env:PHASE3_TERRAFORM_REPO_URL="https://github.com/Nour-Ben-Hadid/finops-infra.git"
-$env:PHASE3_TERRAFORM_REF="main"
-$env:PHASE3_CREATE_PR="1"
-$env:PHASE3_PR_DRAFT="1"
-$env:PHASE3_PR_BASE_BRANCH="main"
-$env:GITHUB_TOKEN="..."
-python scripts\test_phase3_e2e_create_draft_pr.py
-```
-
-The script prints repository metadata, patch file paths and lengths, and the resulting draft PR URL. To verify only the GitHub PR mechanics without depending on the LLM recommendation, additionally set `PHASE3_USE_FAKE_PATCH_FOR_PR_TEST=1`; this adds a timestamped comment to `main.tf` in the draft PR only.
-
-## Development Notes
-
-Keep root agent changes separate from benchmark changes when possible. Add tests under `tests/` for converter behavior, guardrail changes, scenario shape changes, and any field-name compatibility changes. Do not commit `.env`, provider keys, database URLs, Redis URLs, or temporary runtime outputs unless they are intentionally reviewed artifacts.
-
-## Output Persistence
-
-Each run is tracked in `optimization_runs`. Phase 1 EC2/S3 outputs are saved in `phase1_ec2_outputs` and `phase1_s3_outputs`; Phase 2 EC2 guardrail output is saved in `phase2_ec2_outputs`. Phase 3 LLM output is saved separately into `waste` for EC2 and `s3_waste` for S3. See `docs/output_persistence.md`.
+Terraform and OPA must be available separately when benchmark validators or
+Phase 3 behavior require them.

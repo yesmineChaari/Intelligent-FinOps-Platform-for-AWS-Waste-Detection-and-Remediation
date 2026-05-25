@@ -1,6 +1,8 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
+import redis
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 
@@ -16,6 +18,54 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 scheduler = BackgroundScheduler()
+
+INGESTION_STREAM = "ingestion_stream"
+EVENT_INGESTION_COMPLETE = "ingestion_complete"
+
+
+def _build_ingestion_complete_payload() -> dict[str, str]:
+    payload = {
+        "event": EVENT_INGESTION_COMPLETE,
+        "status": "completed",
+    }
+    safe_metadata_sources = (
+        ("workspace_key", ("WORKSPACE_KEY", "TERRAFORM_WORKSPACE_KEY")),
+        ("account_id", ("ACCOUNT_ID",)),
+        ("terraform_repo_url", ("PHASE3_TERRAFORM_REPO_URL",)),
+        ("terraform_ref", ("PHASE3_TERRAFORM_REF",)),
+        ("terraform_subdir", ("PHASE3_TERRAFORM_SUBDIR",)),
+    )
+    for field, environment_names in safe_metadata_sources:
+        for environment_name in environment_names:
+            value = os.environ.get(environment_name)
+            if value is not None:
+                payload[field] = value
+                break
+    return payload
+
+
+def _publish_ingestion_complete() -> bool:
+    redis_url = os.environ.get("REDIS_URL")
+    if not redis_url:
+        logger.warning("[pipeline] REDIS_URL is not set; skipping ingestion_complete publication.")
+        return False
+
+    redis_client = None
+    try:
+        redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+        redis_client.xadd(INGESTION_STREAM, _build_ingestion_complete_payload())
+    except Exception:
+        logger.warning("[pipeline] Ingestion completed, but Redis event publication failed.")
+        return False
+    finally:
+        if redis_client is not None:
+            try:
+                redis_client.close()
+            except Exception:
+                pass
+
+    logger.info("[pipeline] Published ingestion_complete event.")
+    return True
 
 
 def run_full_pipeline():
@@ -62,6 +112,7 @@ def run_full_pipeline():
         logger.error(f"[pipeline] S3 sampler failed: {e}")
 
     logger.info("[pipeline] Full pipeline run complete")
+    _publish_ingestion_complete()
 
 
 @asynccontextmanager

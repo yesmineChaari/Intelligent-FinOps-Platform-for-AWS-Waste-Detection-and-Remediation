@@ -31,6 +31,11 @@ The split responsibilities are:
 - Agent2 runs Phase 3 LLM/Terraform processing only.
 - `shared/` contains common persistence, database, Redis event, settings, and contract code.
 
+The source ownership follows those boundaries: real Phase 1 and Phase 2 code
+lives under `agent1/`, real Phase 3 and benchmarking code lives under
+`agent2/`, and the root `phase*`, `persistence`, and `llm_benchmarking`
+packages are legacy compatibility wrappers.
+
 ## Smoke-Test Checklist
 
 ### 1. Prerequisites
@@ -72,11 +77,41 @@ The event-driven workflow is:
 Redis carries event metadata only, including `run_id`; the database stores the
 actual phase outputs.
 
+Agent0 publishes only after its ingestion cycle reaches its existing completed
+path. An initial discovery failure prevents an event. If Redis publication
+fails after data ingestion, Agent0 logs a safe warning and does not discard
+the database result.
+
+Event contracts:
+
+| Stream | Event | Required fields | Optional safe metadata |
+| --- | --- | --- | --- |
+| `ingestion_stream` | `ingestion_complete` | `event`, `status=completed` | `workspace_key`, `account_id`, `terraform_repo_url`, `terraform_ref`, `terraform_subdir` |
+| `optimization_stream` | `deterministic_complete` | `event`, `run_id`, `status=phase2_completed` | workspace/account/Terraform metadata |
+| `optimization_stream` | `phase3_complete` | `event`, `run_id`, `status=completed` | None |
+| `optimization_stream` | `phase3_failed` | `event`, `status=phase3_failed`, safe `error_message` | `run_id` when known |
+
+Agent0 sources optional metadata from `WORKSPACE_KEY` (or
+`TERRAFORM_WORKSPACE_KEY`), `ACCOUNT_ID`, `PHASE3_TERRAFORM_REPO_URL`,
+`PHASE3_TERRAFORM_REF`, and `PHASE3_TERRAFORM_SUBDIR`. It never forwards raw
+inventory or credential values. The `deterministic_complete` event carries
+`status=phase2_completed`, while the durable run status is `waiting_phase3`
+until Agent2 begins.
+
+Monitor the workers and inspect the metadata streams:
+
+```powershell
+docker compose logs -f agent0 agent1 agent2
+docker compose exec redis redis-cli XRANGE ingestion_stream - + COUNT 5
+docker compose exec redis redis-cli XRANGE optimization_stream - + COUNT 10
+```
+
 ### 5. Manual Worker Runs
 
-The current checked-in Agent0 collector does not yet publish
-`ingestion_complete` to Redis. Until that event integration is supplied, run
-Agent1 manually after Agent0 has populated the database:
+Agent0 now publishes `ingestion_complete` when an ingestion cycle reaches its
+completed path.
+For debugging, or to run Agent1 independently after data has already been
+populated, bypass the Redis wait:
 
 ```powershell
 docker compose run --rm -e AGENT1_SKIP_WAIT=1 agent1
@@ -87,6 +122,10 @@ After Agent1 creates a known optimization run, run Agent2 manually by run id:
 ```powershell
 docker compose run --rm -e AGENT2_RUN_ID=123 agent2
 ```
+
+The standalone `agent0/docker-compose.yml` remains useful for collector-only
+development. It does not provide Redis by default; when `REDIS_URL` is absent,
+Agent0 logs a warning and safely skips event publication.
 
 ### 6. Inspect Persistence
 
@@ -123,8 +162,8 @@ Before sharing logs, confirm they do not contain:
 ## Troubleshooting
 
 - `DATABASE_URL` or `NEON_DATABASE_URL` missing: add the required external database URL to `.env`; Agent1 requires `DATABASE_URL`, while Agent2 accepts either name.
-- Redis connection failure: verify the `redis` service is running and workers receive `REDIS_URL=redis://redis:6379`.
-- Agent1 waits indefinitely: Agent0 has not published `ingestion_complete`; use skip mode after ingestion data exists:
+- Redis connection failure: verify the `redis` service is running and Agent0, Agent1, and Agent2 receive `REDIS_URL=redis://redis:6379`.
+- Agent1 waits indefinitely: verify Agent0 completed ingestion and did not log a Redis publication warning; use skip mode after ingestion data exists for manual debugging:
 
 ```powershell
 docker compose run --rm -e AGENT1_SKIP_WAIT=1 agent1
