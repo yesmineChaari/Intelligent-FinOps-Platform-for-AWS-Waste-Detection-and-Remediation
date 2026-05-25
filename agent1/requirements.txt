@@ -1,0 +1,5 @@
+asyncpg==0.29.0
+redis==5.0.1
+pydantic==2.6.0
+PyYAML==6.0.1
+python-dotenv==0.21.0

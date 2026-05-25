@@ -176,3 +176,55 @@ class TestPhaseOutputPersistence(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(s3_calls), 1)
         self.assertEqual(ec2_calls[0][1][0][1], 1)
         self.assertEqual(s3_calls[0][1][0][2], "bucket-a")
+
+    async def test_save_phase3_outputs_accepts_database_loaded_dict_context(self) -> None:
+        conn = FakeConn()
+        phase2_results = [
+            {
+                "resource_id": 1,
+                "instance_name": "i-test",
+                "waste_type": "idle",
+            }
+        ]
+        s3_results = [{"bucket_name": "bucket-a"}]
+        phase3_output = {
+            "runs": [
+                {
+                    "scenario_type": "ec2",
+                    "scenario": {
+                        "flagged_resources": [
+                            {
+                                "instance_id": "i-test",
+                                "instance_name": "i-test",
+                                "agent2_decision": {"action": "STOP"},
+                            }
+                        ]
+                    },
+                    "llm": {},
+                },
+                {
+                    "scenario_type": "s3",
+                    "scenario": {
+                        "finding": {
+                            "bucket_name": "bucket-a",
+                            "grouping_key": "ALL",
+                        },
+                        "agent2_decision": {"action": "GLACIER_TRANSITION"},
+                    },
+                    "llm": {},
+                },
+            ]
+        }
+
+        await save_phase3_outputs(
+            conn,
+            123,
+            phase3_output,
+            phase2_results=phase2_results,
+            s3_results=s3_results,
+        )
+
+        ec2_calls = _queries_for_table(conn, "INSERT INTO waste")
+        s3_calls = _queries_for_table(conn, "INSERT INTO s3_waste")
+        self.assertEqual(ec2_calls[0][1][0][1], 1)
+        self.assertEqual(s3_calls[0][1][0][1], 20)

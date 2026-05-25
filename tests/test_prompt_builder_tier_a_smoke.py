@@ -7,7 +7,7 @@ from pathlib import Path
 
 class TestPromptBuilderTierASmoke(unittest.TestCase):
     def test_tier_a_a1_build_prompt(self) -> None:
-        repo_path = Path(__file__).resolve().parents[1] / "llm_benchmarking" / "IaC-Evaluation-Pipeline"
+        repo_path = Path(__file__).resolve().parents[1] / "agent2" / "llm_benchmarking" / "IaC-Evaluation-Pipeline"
         scenario_file = repo_path / "scenarios" / "tier_a.json"
         if not scenario_file.exists():
             self.skipTest("tier_a.json not present in workspace")

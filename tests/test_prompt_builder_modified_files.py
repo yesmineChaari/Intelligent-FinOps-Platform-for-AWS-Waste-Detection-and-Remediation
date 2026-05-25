@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def _load_prompt_builder():
-    repo_path = Path(__file__).resolve().parents[1] / "llm_benchmarking" / "IaC-Evaluation-Pipeline"
+    repo_path = Path(__file__).resolve().parents[1] / "agent2" / "llm_benchmarking" / "IaC-Evaluation-Pipeline"
     repo_str = str(repo_path)
     if repo_str not in sys.path:
         sys.path.insert(0, repo_str)

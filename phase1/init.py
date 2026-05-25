@@ -1,4 +1,5 @@
-from .loader import load_rules
-from .detection import run_phase1
+import sys as _sys
 
-__all__ = ["load_rules", "run_phase1"]
+from agent1.phase1 import init as _implementation
+
+_sys.modules[__name__] = _implementation

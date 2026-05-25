@@ -1,29 +1,5 @@
-"""
-Rules loader.
-Reads rules.yaml and validates it against the Pydantic Rules model.
-Fails fast at startup if the file is missing or malformed.
-"""
+import sys as _sys
 
-import yaml
-from pathlib import Path
-from .models import Rules
+from agent1.phase1 import loader as _implementation
 
-
-def load_rules(path: str = "rules.yaml") -> Rules:
-    """
-    Load and validate rules.yaml.
-    Raises FileNotFoundError if the file does not exist.
-    Raises ValidationError if any field is missing or has the wrong type.
-    Both failures are intentional — the pipeline must not run with bad config.
-    """
-    rules_path = Path(path)
-
-    if not rules_path.exists():
-        raise FileNotFoundError(
-            f"rules.yaml not found at {rules_path.resolve()}. "
-            "The pipeline cannot start without threshold configuration."
-        )
-
-    with open(rules_path) as f:
-        raw = yaml.safe_load(f)
-    return Rules(**raw)
+_sys.modules[__name__] = _implementation

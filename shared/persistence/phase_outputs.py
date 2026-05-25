@@ -511,11 +511,20 @@ def _phase3_resource_maps(phase2_results: list[Any], s3_results: list[Any]) -> t
     ec2_by_name: dict[str, int] = {}
     ec2_waste_type_by_name: dict[str, str] = {}
     for result in phase2_results:
-        name = getattr(result, "instance_name", getattr(result, "resource_name", None))
+        if isinstance(result, dict):
+            name = result.get("instance_name") or result.get("resource_name")
+            resource_id = result.get("resource_id")
+            waste_type = result.get("waste_type", "none")
+        else:
+            name = getattr(result, "instance_name", getattr(result, "resource_name", None))
+            resource_id = getattr(result, "resource_id", None)
+            waste_type = getattr(result, "waste_type", "none")
         if not name:
             continue
-        ec2_by_name[str(name)] = int(getattr(result, "resource_id"))
-        ec2_waste_type_by_name[str(name)] = str(_enum_value(getattr(result, "waste_type", "none")))
+        if resource_id is None:
+            continue
+        ec2_by_name[str(name)] = int(resource_id)
+        ec2_waste_type_by_name[str(name)] = str(_enum_value(waste_type))
     return ec2_by_name, ec2_waste_type_by_name
 
 
@@ -560,7 +569,13 @@ async def save_phase3_outputs(
 ) -> None:
     await ensure_output_tables(conn)
     ec2_by_name, ec2_waste_type_by_name = _phase3_resource_maps(phase2_results, s3_results)
-    s3_resource_ids = await _load_s3_resource_ids(conn, [getattr(r, "bucket_name", "") for r in s3_results])
+    s3_resource_ids = await _load_s3_resource_ids(
+        conn,
+        [
+            result.get("bucket_name", "") if isinstance(result, dict) else getattr(result, "bucket_name", "")
+            for result in s3_results
+        ],
+    )
 
     for run in phase3_output.get("runs") or []:
         scenario_type = run.get("scenario_type")

@@ -120,7 +120,7 @@ class TestPhase3Converter(unittest.TestCase):
         self.assertEqual(empty["current_terraform"], "empty terraform")
 
     def test_prompt_builder_accepts_converted_scenario(self) -> None:
-        repo_path = Path(__file__).resolve().parents[1] / "llm_benchmarking" / "IaC-Evaluation-Pipeline"
+        repo_path = Path(__file__).resolve().parents[1] / "agent2" / "llm_benchmarking" / "IaC-Evaluation-Pipeline"
         if not repo_path.exists():
             self.skipTest("IaC-Evaluation-Pipeline repo not present in workspace")
 

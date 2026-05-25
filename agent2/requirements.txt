@@ -1,0 +1,7 @@
+asyncpg==0.29.0
+redis==5.0.1
+requests==2.33.1
+PyGithub>=2.3.0
+
+# Required by the embedded IaC evaluation pipeline validators.
+checkov>=3.2.520
