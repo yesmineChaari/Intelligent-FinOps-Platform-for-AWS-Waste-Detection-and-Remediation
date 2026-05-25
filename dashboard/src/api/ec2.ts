@@ -1,8 +1,9 @@
-import { resolveMockResponse } from "@/api/client"
+import { getJson, resolveMockResponse, USE_MOCKS } from "@/api/client"
 import { mockEc2Findings } from "@/mocks/ec2"
 import type { Ec2Finding } from "@/types/ec2"
 
 export function getEc2Findings(): Promise<Ec2Finding[]> {
-  return resolveMockResponse(mockEc2Findings)
-  // Future FastAPI integration: return getJson<Ec2Finding[]>("/ec2/findings")
+  return USE_MOCKS
+    ? resolveMockResponse(mockEc2Findings)
+    : getJson<Ec2Finding[]>("/ec2/findings")
 }
