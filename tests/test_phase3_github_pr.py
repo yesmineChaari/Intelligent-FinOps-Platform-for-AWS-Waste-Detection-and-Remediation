@@ -1,3 +1,11 @@
+"""Unit tests for the optional Phase 3 GitHub pull-request workflow.
+
+These tests exercise token requirements, patch-plan validation before any Git
+or GitHub action, authenticated repository URL generation, branch naming,
+successful draft PR creation, no-change handling, and honoring the configured
+draft pull-request flag while mocking external side effects.
+"""
+
 import os
 import subprocess
 import unittest

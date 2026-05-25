@@ -1,3 +1,11 @@
+"""Tests for modified-file requirements in the embedded benchmark prompts.
+
+The tests load the Agent2-owned prompt builder and verify schema instructions
+for single-resource, multi-instance, and multi-S3 scenarios, including
+retention of Terraform action fields and the requirement to return complete
+file contents matching available Terraform file headers.
+"""
+
 import importlib
 import sys
 import unittest

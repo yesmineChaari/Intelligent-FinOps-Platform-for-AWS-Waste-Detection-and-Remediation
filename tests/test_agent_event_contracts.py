@@ -1,3 +1,11 @@
+"""Contract tests for metadata events exchanged by Agent0, Agent1, and Agent2.
+
+The suite verifies deterministic completion payload serialization and omitted
+``None`` values, ingestion metadata decoding, Phase 3 success and failure
+publication fields, use of a safe failure message, and parsing of manual
+``AGENT2_RUN_ID`` values.
+"""
+
 import os
 import unittest
 from unittest.mock import patch

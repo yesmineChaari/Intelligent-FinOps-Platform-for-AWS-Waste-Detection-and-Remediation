@@ -1,3 +1,11 @@
+"""Static boundary tests for the self-contained container architecture.
+
+This suite parses worker and shared-package imports to prevent cross-agent
+business-logic dependencies, inspects Dockerfiles to ensure each image copies
+only its owned application package and ``shared/``, and validates that the
+root Compose definition exposes the required Redis and agent services.
+"""
+
 import ast
 import unittest
 from pathlib import Path

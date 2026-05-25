@@ -1,3 +1,12 @@
+"""Entrypoint tests for the Phase 3 Agent2 worker.
+
+The tests mock database, Redis, and LLM operations to cover manual run-id
+mode, Redis event mode, loading Phase 1 and Phase 2 outputs by run id,
+Terraform metadata precedence, the ``running_phase3`` transition before
+execution, final completion publication, safe failure reporting, connection
+cleanup, invalid run-id rejection, and the Phase 1/Phase 2 import boundary.
+"""
+
 import ast
 import os
 import unittest

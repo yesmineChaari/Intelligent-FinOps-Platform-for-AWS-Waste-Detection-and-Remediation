@@ -1,3 +1,10 @@
+"""Smoke test for generating a prompt from a real embedded benchmark scenario.
+
+This test loads the Agent2-owned Tier A fixture and prompt builder, generates
+the prompt for scenario A1, and provides a lightweight check that relocated
+benchmark assets and prompt construction remain usable together.
+"""
+
 import importlib
 import json
 import sys

@@ -1,3 +1,11 @@
+"""Unit tests for shared Redis Stream publication and waiting helpers.
+
+Using fake Redis readers and publishers, these tests verify string conversion
+and omission of absent payload values without mutation, automatic event field
+insertion, ignoring unrelated events while reading, stream cursor advancement,
+and decoding of both byte and string Redis field representations.
+"""
+
 import unittest
 
 from shared.events import (

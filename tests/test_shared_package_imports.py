@@ -1,3 +1,11 @@
+"""Tests for the shared package API and root persistence compatibility layer.
+
+The suite verifies that shared modules import, environment flag and string
+helpers behave as configured, Redis field/payload helpers convert values
+correctly, and both ``persistence`` and ``shared.persistence`` expose the same
+public run/output/status functions.
+"""
+
 import importlib
 import os
 import unittest

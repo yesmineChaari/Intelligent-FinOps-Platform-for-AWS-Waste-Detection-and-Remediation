@@ -1,3 +1,12 @@
+"""Entrypoint tests for the deterministic Agent1 worker.
+
+Using mocks for Redis, Postgres, and phase execution, these tests verify skip
+mode and event-wait mode, execution of Phase 1 and Phase 2 only, ordered run
+status transitions, forwarding of safe trigger metadata, publication of
+``deterministic_complete``, safe failure status recording, resource cleanup,
+and the absence of Phase 3 or benchmarking imports.
+"""
+
 import ast
 import os
 import unittest

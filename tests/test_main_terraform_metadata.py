@@ -1,3 +1,11 @@
+"""Tests for metadata handling in the legacy single-process entrypoint.
+
+The suite verifies decoding of the Redis ingestion trigger, Terraform source
+selection from preferred and legacy event fields, environment fallbacks used
+in skip mode, safe defaults when metadata is missing, and redaction of
+Terraform source content before it is written to console/log views.
+"""
+
 import os
 import unittest
 from unittest.mock import patch

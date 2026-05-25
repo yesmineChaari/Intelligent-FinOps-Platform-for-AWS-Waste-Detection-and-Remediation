@@ -1,3 +1,10 @@
+"""Scenario-converter tests for database-loaded dictionary inputs.
+
+The suite verifies that EC2 Phase 1 plus Phase 2 dictionaries and S3 Phase 1
+dictionaries produce Phase 3 scenarios, that dict and object inputs yield the
+same shapes, and that absent optional fields do not cause conversion failures.
+"""
+
 import unittest
 from types import SimpleNamespace
 

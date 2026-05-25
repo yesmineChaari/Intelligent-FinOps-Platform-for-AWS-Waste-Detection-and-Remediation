@@ -1,3 +1,11 @@
+"""Integration-style tests for Phase 3 patch planning and PR orchestration.
+
+The suite runs Phase 3 with mocked LLM/Terraform and GitHub collaborators to
+verify disabled-PR summaries, enabled PR creation using original files,
+suppression when no modified files exist, non-fatal PR exceptions, and compact
+patch-plan summaries that avoid duplicating full Terraform contents.
+"""
+
 import os
 import unittest
 from types import SimpleNamespace

@@ -1,3 +1,12 @@
+"""Integration tests for Agent0's Redis completion handoff.
+
+These tests execute the Agent0 pipeline entrypoint with stubbed application
+dependencies and a fake Redis client. They verify successful publication on
+``ingestion_stream``, the safe metadata whitelist, compatibility with Agent1,
+safe skipping when ``REDIS_URL`` is absent, non-fatal Redis failures, and no
+completion event when initial discovery fails.
+"""
+
 import importlib.util
 import os
 import sys

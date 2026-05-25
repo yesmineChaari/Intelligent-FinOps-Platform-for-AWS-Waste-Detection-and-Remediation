@@ -1,3 +1,12 @@
+"""Persistence write tests for optimization runs and phase output storage.
+
+The suite uses a fake async connection to verify run creation, explicit status
+updates and the legacy missing-``error_message`` fallback, compatible final
+completion updates, Phase 1 EC2/S3 trace writes, Phase 2 guardrail writes, and
+Phase 3 EC2/S3 output persistence for both object and database-loaded dict
+inputs.
+"""
+
 import unittest
 
 import asyncpg

@@ -1,3 +1,11 @@
+"""Tests for extracting Terraform patch plans from parsed Phase 3 responses.
+
+These tests cover modified files from single, multiple, and nested response
+shapes; invalid and duplicate file handling; title and description metadata;
+default PR metadata; warnings for nested structures; and null or absent LLM
+output handling.
+"""
+
 import unittest
 
 from phase3.patch_schema import (

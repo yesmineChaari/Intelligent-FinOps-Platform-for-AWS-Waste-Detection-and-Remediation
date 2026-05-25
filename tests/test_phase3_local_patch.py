@@ -1,3 +1,11 @@
+"""Safety tests for applying Phase 3 Terraform patches in a local checkout.
+
+The suite verifies rejection of invalid, unsafe, state, empty, excessive, or
+unauthorized-new-file patches; safe writes of approved Terraform content;
+containment within the repository directory; conditional new-file support;
+and non-fatal behavior around Terraform formatting and validation commands.
+"""
+
 import os
 import subprocess
 import tempfile

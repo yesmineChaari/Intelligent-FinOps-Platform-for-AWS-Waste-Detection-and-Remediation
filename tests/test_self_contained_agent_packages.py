@@ -1,3 +1,11 @@
+"""Tests for package ownership after phases were moved into agent folders.
+
+The suite verifies preferred Agent1 and Agent2 imports alongside legacy root
+aliases, confirms benchmark package ownership and compatibility import access,
+checks worker source imports use agent-owned paths, ensures legacy ``main`` can
+still import, and prevents ``shared/`` from depending on agent phase logic.
+"""
+
 import ast
 import importlib
 import unittest

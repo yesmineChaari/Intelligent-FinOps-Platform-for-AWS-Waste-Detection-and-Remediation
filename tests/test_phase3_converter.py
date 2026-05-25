@@ -1,3 +1,11 @@
+"""Scenario-converter tests for existing object/Pydantic phase outputs.
+
+These tests verify EC2 scenario construction, conversion of skipped findings
+to keep decisions, multi- and single-bucket S3 scenario construction,
+inclusion of current Terraform context where expected, and compatibility of
+converted scenarios with the embedded prompt builder.
+"""
+
 import importlib
 import sys
 import unittest

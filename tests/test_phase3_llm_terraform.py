@@ -1,3 +1,11 @@
+"""Tests for Terraform-context integration in Phase 3 LLM execution.
+
+With benchmark imports and Terraform resolution mocked, these tests verify the
+empty-context path, propagation of resolved Terraform bundles into EC2 and S3
+scenarios, and graceful warning behavior when Terraform source retrieval
+fails while LLM processing continues.
+"""
+
 import os
 import unittest
 from types import SimpleNamespace

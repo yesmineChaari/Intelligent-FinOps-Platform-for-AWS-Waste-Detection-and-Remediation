@@ -1,3 +1,11 @@
+"""Tests for retrieving safe Terraform context from a GitHub repository.
+
+The suite covers supported repository URL forms, filtering Terraform paths and
+unsafe/state locations, optional subdirectory scoping, redaction of secret
+assignments and heredocs, deterministic prompt-bundle formatting, and bundle
+resolution using mocked GitHub file retrieval.
+"""
+
 import os
 import unittest
 from unittest.mock import patch

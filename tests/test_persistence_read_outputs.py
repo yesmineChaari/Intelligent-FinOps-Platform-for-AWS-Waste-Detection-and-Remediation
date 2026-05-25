@@ -1,3 +1,12 @@
+"""Tests for loading deterministic phase output rows for Agent2.
+
+With a fake asynchronous database connection, these tests verify that each
+loader queries the correct table by ``run_id`` and orders results by ``id``,
+that stored ``raw_output`` data is merged into plain dictionaries while
+explicit database columns win conflicts, and that empty query results return
+empty lists.
+"""
+
 import unittest
 
 from shared.persistence import (
