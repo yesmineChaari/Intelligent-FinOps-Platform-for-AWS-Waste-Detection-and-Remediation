@@ -9,6 +9,12 @@ def _enum_value(value: Any) -> Any:
     return getattr(value, "value", value)
 
 
+def _read(obj: Any, field: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(field, default)
+    return getattr(obj, field, default)
+
+
 def _coalesce(*values: Any) -> Any:
     for value in values:
         if value is not None:
@@ -33,7 +39,7 @@ def build_ec2_scenario(
 
     phase1_by_id: dict[int, Any] = {}
     for r in phase1_results:
-        rid = getattr(r, "resource_id", None)
+        rid = _read(r, "resource_id")
         if rid is None:
             continue
         try:
@@ -44,7 +50,7 @@ def build_ec2_scenario(
     flagged_resources: list[dict[str, Any]] = []
 
     for p2 in phase2_results:
-        rid_any = getattr(p2, "resource_id", None)
+        rid_any = _read(p2, "resource_id")
         if rid_any is None:
             continue
         try:
@@ -54,25 +60,25 @@ def build_ec2_scenario(
 
         p1 = phase1_by_id.get(rid)
 
-        agent2_action = _enum_value(_coalesce(getattr(p2, "phase2_action", None), getattr(p2, "action", None)))
-        phase1_action = _enum_value(_coalesce(getattr(p1, "action", None), getattr(p2, "phase1_action", None)))
+        agent2_action = _enum_value(_coalesce(_read(p2, "phase2_action"), _read(p2, "action")))
+        phase1_action = _enum_value(_coalesce(_read(p1, "action"), _read(p2, "phase1_action")))
         action = agent2_action or phase1_action
         if action in ("SKIP", "REVIEW"):
             action = "KEEP"
         elif action == "CLEAN":
             action = "NONE"
 
-        waste_type = _enum_value(_coalesce(getattr(p1, "waste_type", None), getattr(p2, "waste_type", None)))
-        detection_reason = _coalesce(getattr(p1, "detection_reason", None), getattr(p2, "detection_reason", None))
+        waste_type = _enum_value(_coalesce(_read(p1, "waste_type"), _read(p2, "waste_type")))
+        detection_reason = _coalesce(_read(p1, "detection_reason"), _read(p2, "detection_reason"))
 
-        phase2_reason = getattr(p2, "phase2_action_reason", None)
+        phase2_reason = _read(p2, "phase2_action_reason")
         if phase2_reason:
             if detection_reason:
                 detection_reason = f"{detection_reason} | Phase2: {phase2_reason}"
             else:
                 detection_reason = f"Phase2: {phase2_reason}"
 
-        block_reason = _coalesce(getattr(p2, "block_reason", None), getattr(p2, "guardrail_reason", None))
+        block_reason = _coalesce(_read(p2, "block_reason"), _read(p2, "guardrail_reason"))
 
         agent2_decision: dict[str, Any] = {
             "action": action,
@@ -80,19 +86,19 @@ def build_ec2_scenario(
             "detection_reason": detection_reason,
         }
 
-        detection_window_days = _coalesce(getattr(p1, "detection_window_days", None), getattr(p2, "detection_window_days", None))
+        detection_window_days = _coalesce(_read(p1, "detection_window_days"), _read(p2, "detection_window_days"))
         if detection_window_days is not None:
             agent2_decision["detection_window_days"] = int(detection_window_days)
 
         if block_reason:
             agent2_decision["block_reason"] = str(block_reason)
 
-        p95_cpu = _coalesce(getattr(p1, "p95_cpu", None), getattr(p2, "p95_cpu", None))
+        p95_cpu = _coalesce(_read(p1, "p95_cpu"), _read(p2, "p95_cpu"))
         if p95_cpu is not None:
-            p99_cpu = _coalesce(getattr(p1, "p99_cpu", None), getattr(p2, "p99_cpu", None))
-            max_cpu = _coalesce(getattr(p1, "max_cpu", None), getattr(p2, "max_cpu", None))
-            p95_ram = _coalesce(getattr(p1, "p95_ram", None), getattr(p2, "p95_ram", None))
-            cv = _coalesce(getattr(p1, "cv", None), getattr(p2, "cv", None))
+            p99_cpu = _coalesce(_read(p1, "p99_cpu"), _read(p2, "p99_cpu"))
+            max_cpu = _coalesce(_read(p1, "max_cpu"), _read(p2, "max_cpu"))
+            p95_ram = _coalesce(_read(p1, "p95_ram"), _read(p2, "p95_ram"))
+            cv = _coalesce(_read(p1, "cv"), _read(p2, "cv"))
 
             try:
                 agent2_decision["p95_cpu"] = float(p95_cpu)
@@ -121,18 +127,18 @@ def build_ec2_scenario(
                 except (TypeError, ValueError):
                     pass
 
-        stopped_days = _coalesce(getattr(p1, "stopped_days", None), getattr(p2, "stopped_days", None))
+        stopped_days = _coalesce(_read(p1, "stopped_days"), _read(p2, "stopped_days"))
         if stopped_days is not None:
             try:
                 agent2_decision["stopped_days"] = int(stopped_days)
             except (TypeError, ValueError):
                 pass
 
-        recommended_type = _coalesce(getattr(p1, "recommended_type", None), getattr(p2, "recommended_type", None))
+        recommended_type = _coalesce(_read(p1, "recommended_type"), _read(p2, "recommended_type"))
         if recommended_type:
             agent2_decision["recommended_type"] = str(recommended_type)
 
-        blast_radius = _coalesce(getattr(p2, "blast_radius", None), getattr(p2, "blast_radius_score", None))
+        blast_radius = _coalesce(_read(p2, "blast_radius"), _read(p2, "blast_radius_score"))
         if blast_radius is not None:
             try:
                 agent2_decision["blast_radius"] = int(blast_radius)
@@ -140,41 +146,41 @@ def build_ec2_scenario(
                 pass
 
         resource_name = _coalesce(
-            getattr(p2, "instance_name", None),
-            getattr(p1, "resource_name", None),
-            getattr(p2, "resource_name", None),
+            _read(p2, "instance_name"),
+            _read(p1, "resource_name"),
+            _read(p2, "resource_name"),
         )
         instance_id = str(_coalesce(resource_name, rid))
         instance_name = str(_coalesce(resource_name, instance_id))
 
         current_instance_type = _coalesce(
-            getattr(p2, "instance_type", None),
-            getattr(p1, "current_instance_type", None),
-            getattr(p2, "current_instance_type", None),
+            _read(p2, "instance_type"),
+            _read(p1, "current_instance_type"),
+            _read(p2, "current_instance_type"),
         )
 
         resource_entry: dict[str, Any] = {
             "instance_id": instance_id,
             "instance_name": instance_name,
             "instance_type": str(current_instance_type) if current_instance_type else None,
-            "role": _coalesce(getattr(p1, "role", None), getattr(p2, "role", None)),
-            "status": getattr(p1, "status", None),
-            "os": getattr(p1, "os", None),
-            "region": getattr(p1, "region", None),
-            "environment": getattr(p1, "environment", None),
+            "role": _coalesce(_read(p1, "role"), _read(p2, "role")),
+            "status": _read(p1, "status"),
+            "os": _read(p1, "os"),
+            "region": _read(p1, "region"),
+            "environment": _read(p1, "environment"),
             "relationships": [],
             "agent2_decision": agent2_decision,
         }
 
         current_cost_per_hour = _coalesce(
-            getattr(p1, "current_cost_per_hour", None),
-            getattr(p2, "current_cost_per_hour", None),
+            _read(p1, "current_cost_per_hour"),
+            _read(p2, "current_cost_per_hour"),
         )
         recommended_cost_per_hour = _coalesce(
-            getattr(p1, "recommended_cost_per_hour", None),
-            getattr(p2, "recommended_cost_per_hour", None),
+            _read(p1, "recommended_cost_per_hour"),
+            _read(p2, "recommended_cost_per_hour"),
         )
-        waste_per_month = _coalesce(getattr(p1, "waste_per_month", None), getattr(p2, "waste_per_month", None))
+        waste_per_month = _coalesce(_read(p1, "waste_per_month"), _read(p2, "waste_per_month"))
 
         def _safe_float(value: Any, default: float) -> float:
             if value is None:
@@ -230,27 +236,27 @@ def build_s3_scenario(
 
     def _finding_for_result(r: Any) -> dict[str, Any]:
         return {
-            "finding_type": _normalize_s3_action(getattr(r, "action", None)) or "S3_OPTIMIZATION",
+            "finding_type": _normalize_s3_action(_read(r, "action")) or "S3_OPTIMIZATION",
             "resource_type": "s3_bucket",
-            "bucket_name": getattr(r, "bucket_name", None),
-            "grouping_key": getattr(r, "grouping_key", None),
-            "has_lifecycle": getattr(r, "has_lifecycle", None),
-            "total_requests_30d": getattr(r, "total_requests_30d", None),
-            "object_count": getattr(r, "object_count", None),
-            "pct_older_90_days": getattr(r, "pct_older_90_days", None),
-            "estimated_monthly_savings": getattr(r, "estimated_monthly_savings", None),
-            "detection_reason": getattr(r, "detection_reason", None),
+            "bucket_name": _read(r, "bucket_name"),
+            "grouping_key": _read(r, "grouping_key"),
+            "has_lifecycle": _read(r, "has_lifecycle"),
+            "total_requests_30d": _read(r, "total_requests_30d"),
+            "object_count": _read(r, "object_count"),
+            "pct_older_90_days": _read(r, "pct_older_90_days"),
+            "estimated_monthly_savings": _read(r, "estimated_monthly_savings"),
+            "detection_reason": _read(r, "detection_reason"),
         }
 
     def _decision_for_result(r: Any) -> dict[str, Any]:
-        original_action = _enum_value(getattr(r, "action", None))
+        original_action = _enum_value(_read(r, "action"))
         action = _normalize_s3_action(original_action)
 
         decision = {
             "action": action,
-            "waste_type": _enum_value(getattr(r, "waste_type", None)),
-            "detection_window_days": getattr(r, "detection_window_days", None),
-            "detection_reason": getattr(r, "detection_reason", None),
+            "waste_type": _enum_value(_read(r, "waste_type")),
+            "detection_window_days": _read(r, "detection_window_days"),
+            "detection_reason": _read(r, "detection_reason"),
             "blast_radius": None,
         }
         if original_action == "REVIEW":
@@ -282,8 +288,8 @@ def build_s3_scenario(
 
     findings: list[dict[str, Any]] = []
     for r in s3_results:
-        bucket = getattr(r, "bucket_name", None) or "unknown_bucket"
-        grouping = getattr(r, "grouping_key", None)
+        bucket = _read(r, "bucket_name") or "unknown_bucket"
+        grouping = _read(r, "grouping_key")
         resource_id = str(bucket if not grouping else f"{bucket}:{grouping}")
         findings.append(
             {
