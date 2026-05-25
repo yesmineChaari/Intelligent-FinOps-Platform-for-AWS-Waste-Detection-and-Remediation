@@ -15,7 +15,7 @@ export function RunsHistoryPage() {
     <div className="space-y-6">
       <PageHeader
         title="Runs History"
-        description="Mock optimization pipeline execution history across deterministic and Phase 3 processing."
+        description="Optimization pipeline execution history across deterministic and Phase 3 processing."
       />
       <TableCard
         title="Optimization runs"

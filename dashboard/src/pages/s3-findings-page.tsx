@@ -16,7 +16,7 @@ export function S3FindingsPage() {
     <div className="space-y-6">
       <PageHeader
         title="S3 Findings"
-        description="Mock S3 lifecycle findings for retained, infrequently accessed, and protected objects."
+        description="S3 lifecycle findings for retained, infrequently accessed, and protected objects."
         actions={<Button variant="outline">Export lifecycle plan</Button>}
       />
       <TableCard

@@ -17,7 +17,7 @@ export function Ec2FindingsPage() {
     <div className="space-y-6">
       <PageHeader
         title="EC2 Findings"
-        description="Mock EC2 utilization findings produced during Phase 1 and refined for operator review."
+        description="EC2 utilization findings produced during Phase 1 and refined for operator review."
         actions={<Button variant="outline">Filter findings</Button>}
       />
       <TableCard
