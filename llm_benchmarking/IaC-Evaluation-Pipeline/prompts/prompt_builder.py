@@ -44,7 +44,15 @@ MODE1_2_SCHEMA = """{
   "pipeline_warning_acknowledged": <true | false>,
   "data_loss_acknowledged": <true | false — true only for destructive actions with irreversible data loss>,
   "terraform_action": "NONE | SCRIPT_HANDLES | LLM_GENERATED",
-  "terraform_block": "<full HCL block if terraform_action is LLM_GENERATED — null otherwise>"
+  "terraform_block": "<full HCL block if terraform_action is LLM_GENERATED — null otherwise>",
+  "modified_files": [
+    {
+      "file_path": "path/from/repo/root.tf",
+      "new_content": "full final content of the file after the change"
+    }
+  ],
+  "pr_title": "",
+  "pr_description": ""
 }"""
 
 MODE3_SCHEMA = """{
@@ -215,7 +223,19 @@ TERRAFORM RULES — only when terraform_action = LLM_GENERATED:
   - Pre-compute all numeric values — never write arithmetic expressions (e.g. write 91.98, not 730 * 0.126).
   - Use JSON string syntax for terraform_block values — never use triple quotes.
   - Always set encrypted = true on root_block_device and any ebs_block_device blocks.
-  
+
+PR PATCH OUTPUT RULES:
+- If terraform_action = LLM_GENERATED, you MUST populate modified_files.
+- modified_files must contain the FULL FINAL CONTENT of every Terraform file you changed.
+- Do not return partial snippets in modified_files.new_content.
+- Preserve unrelated resources, comments, variables, providers, module calls, and formatting as much as possible.
+- file_path must exactly match one of the file paths shown in ### FILE headers in current_terraform.
+- If no Terraform change is needed, modified_files must be [].
+- If terraform_action = NONE or SCRIPT_HANDLES, modified_files must be [].
+- Keep terraform_block for backward compatibility. The automation that creates Pull Requests will ignore terraform_block and use modified_files only.
+- If multiple files must change, include one modified_files entry per file.
+- Do not invent file paths unless a new Terraform file is strictly required.
+- Prefer modifying existing files over creating new files.
 
 OUTPUT FORMAT:
 Respond with ONLY valid JSON matching this schema — no prose before or after:
@@ -234,7 +254,9 @@ MULTI_INSTANCE_ADDENDUM = """
 - For dependent_primary + dependent_secondary pairs: dependents must be actioned before their primary.
 - State your intended execution order in each instance's decision_summary.rationale.
 - Populate group_cost_report with the sum of savings across all actioned instances.
-- Output a single JSON object with keys "instances", "group_summary", "group_cost_report", and "execution_order".
+- Put terraform_action, modified_files, pr_title, and pr_description at the top level, not inside individual instances.
+- A single modified_files entry may patch multiple instances defined in the same Terraform file.
+- Output a single JSON object with keys "instances", "terraform_action", "modified_files", "pr_title", "pr_description", "group_summary", "group_cost_report", and "execution_order".
 """
 
 MULTI_INSTANCE_SCHEMA = """{
@@ -264,6 +286,15 @@ MULTI_INSTANCE_SCHEMA = """{
       "terraform_block": "... | null"
     }
   },
+  "terraform_action": "NONE | SCRIPT_HANDLES | LLM_GENERATED",
+  "modified_files": [
+    {
+      "file_path": "main.tf",
+      "new_content": "full final file content"
+    }
+  ],
+  "pr_title": "",
+  "pr_description": "",
   "group_summary": "<overall narrative: all instances covered, execution order rationale, total savings>",
   "group_cost_report": {
     "total_monthly_savings": <float>,
@@ -310,6 +341,15 @@ MULTI_FINDING_C_SCHEMA = """{
       "terraform_block": "<full HCL block if terraform_action is LLM_GENERATED — null otherwise>"
     }
   },
+  "terraform_action": "NONE | LLM_GENERATED",
+  "modified_files": [
+    {
+      "file_path": "modules/s3/main.tf",
+      "new_content": "full final file content"
+    }
+  ],
+  "pr_title": "",
+  "pr_description": "",
   "group_summary": "<narrative covering all findings, total savings, key risks>",
   "group_cost_report": {
     "total_monthly_savings": <float>,
@@ -326,7 +366,9 @@ MULTI_FINDING_C_ADDENDUM = """
 - Do NOT mix Terraform blocks between findings — each resource_id entry is self-contained.
 - group_cost_report.findings_actioned = count of findings where terraform_action = LLM_GENERATED.
 - Non-EC2 findings have no dependency order — evaluate them independently.
-- Output a single JSON object with keys "findings", "group_summary", and "group_cost_report".
+- Put terraform_action, modified_files, pr_title, and pr_description at the top level, not inside individual findings.
+- A single modified_files entry may patch multiple findings defined in the same Terraform file.
+- Output a single JSON object with keys "findings", "terraform_action", "modified_files", "pr_title", "pr_description", "group_summary", and "group_cost_report".
 """
 
 MODE1_2_SYSTEM_MULTI_C = MODE1_2_SYSTEM.replace(

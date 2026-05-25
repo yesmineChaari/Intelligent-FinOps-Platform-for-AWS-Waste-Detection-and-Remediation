@@ -8,6 +8,7 @@ Phase 1 results stay in memory and are passed to Phase 2.
 
 import asyncio
 import asyncpg
+import copy
 import redis.asyncio as aioredis
 import os
 import json
@@ -63,6 +64,48 @@ def _extract_workspace_key(trigger_context: dict[str, str]) -> str | None:
         or os.environ.get("WORKSPACE_KEY")
         or os.environ.get("TERRAFORM_WORKSPACE_KEY")
     )
+
+
+def _build_terraform_source(trigger_payload: dict[str, str]) -> dict[str, str | None]:
+    return {
+        "repo_url": (
+            trigger_payload.get("terraform_repo_url")
+            or trigger_payload.get("repo_url")
+            or os.environ.get("PHASE3_TERRAFORM_REPO_URL")
+        ),
+        "ref": (
+            trigger_payload.get("terraform_ref")
+            or trigger_payload.get("repo_ref")
+            or os.environ.get("PHASE3_TERRAFORM_REF", "main")
+        ),
+        "subdir": (
+            trigger_payload.get("terraform_subdir")
+            or trigger_payload.get("repo_subdir")
+            or os.environ.get("PHASE3_TERRAFORM_SUBDIR", "")
+        ),
+    }
+
+
+def _redact_current_terraform_for_logging(scenario: dict) -> dict:
+    redacted = copy.deepcopy(scenario)
+    if "current_terraform" in redacted:
+        size = len(redacted.get("current_terraform") or "")
+        redacted["current_terraform"] = f"<redacted {size} chars>"
+
+    for finding in redacted.get("findings") or []:
+        if isinstance(finding, dict) and "current_terraform" in finding:
+            size = len(finding.get("current_terraform") or "")
+            finding["current_terraform"] = f"<redacted {size} chars>"
+    return redacted
+
+
+def _redact_phase3_output_for_logging(phase3_output: dict) -> dict:
+    redacted = copy.deepcopy(phase3_output)
+    for run in redacted.get("runs") or []:
+        scenario = run.get("scenario") if isinstance(run, dict) else None
+        if isinstance(scenario, dict):
+            run["scenario"] = _redact_current_terraform_for_logging(scenario)
+    return redacted
 
 
 def _phase1_metrics_payload(result) -> dict[str, float | int | bool | str]:
@@ -149,10 +192,10 @@ async def main():
     # ── Wait for Agent 1 to finish ────────────────────────────────────────
     skip_trigger = os.environ.get("SKIP_REDIS_TRIGGER", "").lower() in ("1", "true", "yes")
     if not skip_trigger:
-        trigger_context = await wait_for_trigger(redis_client)
+        trigger_payload = await wait_for_trigger(redis_client)
     else:
         log.info("SKIP_REDIS_TRIGGER is set; running Phase 1 immediately without waiting on Redis trigger.")
-        trigger_context = {}
+        trigger_payload = {}
 
     # ── Connect to Neon DB ────────────────────────────────────────────────
     log.info("Connecting to Neon DB...")
@@ -162,11 +205,11 @@ async def main():
     run_error: str | None = None
 
     try:
-        workspace_key = _extract_workspace_key(trigger_context)
+        workspace_key = _extract_workspace_key(trigger_payload)
         run_id = await start_optimization_run(
             conn,
             workspace_key=workspace_key,
-            trigger_context=trigger_context,
+            trigger_context=trigger_payload,
             phase3_model_key=os.environ.get("PHASE3_MODEL"),
         )
         log.info("Optimization run started: id=%s workspace_key=%s", run_id, workspace_key or "none")
@@ -223,8 +266,8 @@ async def main():
         phase1_payload_str = json.dumps({"ec2": ec2_output, "s3": s3_output}, indent=2, default=str)
         print(phase1_payload_str)
         try:
-            Path("phase1_output.json").write_text(phase1_payload_str, encoding="utf-8")
-            log.info("Phase 1 output written to phase1_output.json")
+            Path("output/phase1_output.json").write_text(phase1_payload_str, encoding="utf-8")
+            log.info("Phase 1 output written to output/phase1_output.json")
         except Exception as exc:
             log.warning("Failed to write Phase 1 output file: %s", exc)
         try:
@@ -274,18 +317,21 @@ async def main():
         try:
             from phase3.llm_phase3 import run_phase3_llm
 
+            terraform_source = _build_terraform_source(trigger_payload)
             phase3_output = await asyncio.to_thread(
-                run_phase3_llm,
-                ec2_results,
-                phase2_results,
-                s3_results,
-                os.environ.get("PHASE3_MODEL") or None,
+                lambda: run_phase3_llm(
+                    ec2_results,
+                    phase2_results,
+                    s3_results,
+                    os.environ.get("PHASE3_MODEL") or None,
+                    terraform_source=terraform_source,
+                )
             )
 
             llm_inputs = [
                 {
                     "scenario_type": run.get("scenario_type"),
-                    "scenario": run.get("scenario"),
+                    "scenario": _redact_current_terraform_for_logging(run.get("scenario") or {}),
                 }
                 for run in (phase3_output.get("runs") or [])
             ]
@@ -305,10 +351,10 @@ async def main():
 
             log.info("Phase 3 Output Payload (JSON):")
             phase3_payload_str = json.dumps(phase3_output, indent=2, default=str)
-            print(phase3_payload_str)
+            print(json.dumps(_redact_phase3_output_for_logging(phase3_output), indent=2, default=str))
             try:
-                Path("phase3_output.json").write_text(phase3_payload_str, encoding="utf-8")
-                log.info("Phase 3 output written to phase3_output.json")
+                Path("output/phase3_output.json").write_text(phase3_payload_str, encoding="utf-8")
+                log.info("Phase 3 output written to output/phase3_output.json")
             except Exception as exc:
                 log.warning("Failed to write Phase 3 output file: %s", exc)
             try:

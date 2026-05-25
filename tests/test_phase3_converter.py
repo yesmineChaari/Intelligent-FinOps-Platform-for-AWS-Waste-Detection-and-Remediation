@@ -42,10 +42,11 @@ class TestPhase3Converter(unittest.TestCase):
             relationship_count=0,
         )
 
-        scenario = build_ec2_scenario([p1], [p2])
+        scenario = build_ec2_scenario([p1], [p2], current_terraform="ec2 terraform")
         self.assertIn("flagged_resources", scenario)
         self.assertEqual(len(scenario["flagged_resources"]), 1)
         self.assertEqual(scenario["flagged_resources"][0]["agent2_decision"]["action"], "STOP")
+        self.assertEqual(scenario["current_terraform"], "ec2 terraform")
         dumped = p2.model_dump()
         self.assertIn("instance_name", dumped)
         self.assertIn("blast_radius", dumped)
@@ -99,9 +100,24 @@ class TestPhase3Converter(unittest.TestCase):
             detection_reason="no lifecycle",
         )
 
-        scenario = build_s3_scenario([r1, r2])
+        scenario = build_s3_scenario([r1, r2], current_terraform="s3 terraform")
         self.assertIn("findings", scenario)
         self.assertEqual(len(scenario["findings"]), 2)
+        self.assertEqual(scenario["current_terraform"], "s3 terraform")
+        self.assertEqual(scenario["findings"][0]["current_terraform"], "s3 terraform")
+
+    def test_build_s3_scenario_single_and_empty_include_current_terraform(self) -> None:
+        result = S3FindingResult(
+            bucket_name="b1",
+            action=S3Action.RECOMMEND_LIFECYCLE,
+            waste_type=S3WasteType.MISSING_LIFECYCLE,
+        )
+
+        single = build_s3_scenario([result], current_terraform="single terraform")
+        empty = build_s3_scenario([], current_terraform="empty terraform")
+
+        self.assertEqual(single["current_terraform"], "single terraform")
+        self.assertEqual(empty["current_terraform"], "empty terraform")
 
     def test_prompt_builder_accepts_converted_scenario(self) -> None:
         repo_path = Path(__file__).resolve().parents[1] / "llm_benchmarking" / "IaC-Evaluation-Pipeline"

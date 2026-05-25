@@ -216,6 +216,7 @@ def build_s3_scenario(
     scenario_id: str = "C_auto",
     description: str = "Auto-generated S3 scenario from Phase1 outputs",
     terraform_mode: int = 2,
+    current_terraform: str = "",
 ) -> dict[str, Any]:
     """Build a Tier-C (non-EC2) scenario for S3 findings."""
 
@@ -263,7 +264,7 @@ def build_s3_scenario(
             "terraform_mode": terraform_mode,
             "finding": {},
             "agent2_decision": {},
-            "current_terraform": "",
+            "current_terraform": current_terraform,
             "llm_evaluation": {},
         }
 
@@ -275,7 +276,7 @@ def build_s3_scenario(
             "terraform_mode": terraform_mode,
             "finding": _finding_for_result(r),
             "agent2_decision": _decision_for_result(r),
-            "current_terraform": "",
+            "current_terraform": current_terraform,
             "llm_evaluation": {},
         }
 
@@ -289,7 +290,7 @@ def build_s3_scenario(
                 "resource_id": resource_id,
                 "finding": _finding_for_result(r),
                 "agent2_decision": _decision_for_result(r),
-                "current_terraform": "",
+                "current_terraform": current_terraform,
             }
         )
 
@@ -298,5 +299,6 @@ def build_s3_scenario(
         "description": description,
         "terraform_mode": terraform_mode,
         "findings": findings,
+        "current_terraform": current_terraform,
         "llm_evaluation": {},
     }

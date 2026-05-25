@@ -94,9 +94,23 @@ PHASE3_MODEL=qwen3-coder-32b
 GROQ_API_KEY=...
 GOOGLE_API_KEY=...
 MISTRAL_API_KEY=...
+PHASE3_TERRAFORM_REPO_URL=https://github.com/Nour-Ben-Hadid/finops-infra.git
+PHASE3_TERRAFORM_REF=main
+PHASE3_TERRAFORM_SUBDIR=
+PHASE3_TERRAFORM_MAX_BYTES=500000
+PHASE3_CREATE_PR=0
+PHASE3_PR_BASE_BRANCH=main
+PHASE3_PR_BRANCH_PREFIX=finops/phase3
+PHASE3_PR_DRAFT=1
+PHASE3_PATCH_MAX_FILES=10
+PHASE3_ALLOW_NEW_TF_FILES=0
+PHASE3_RUN_TERRAFORM_VALIDATE=0
+GITHUB_TOKEN=
 ```
 
-`NEON_DATABASE_URL` is required for `main.py`. `REDIS_URL` defaults to `redis://localhost:6379`, and `RULES_PATH` defaults to `rules.yaml`.
+`NEON_DATABASE_URL` is required for `main.py`. `REDIS_URL` defaults to `redis://localhost:6379`, and `RULES_PATH` defaults to `rules.yaml`. Terraform repository settings may also arrive in the Redis `ingestion_complete` event as `terraform_repo_url`, `terraform_ref`, and `terraform_subdir` (or `repo_url`, `repo_ref`, and `repo_subdir`).
+
+`PHASE3_CREATE_PR=0` records a patch plan without writing to GitHub. Set it to `1` only to enable branch creation, push, and pull request creation; pull requests are draft by default. `GITHUB_TOKEN` is required only when PR creation is enabled.
 
 ## Commands
 
@@ -111,6 +125,22 @@ Run a focused benchmark from the embedded project directory:
 python pipeline.py --models qwen3-coder-32b --scenario A1
 python scorer.py
 ```
+
+## Manual Draft PR Test
+
+This command creates a real draft pull request in the configured Terraform repository. Use `PHASE3_CREATE_PR=0` for a no-write dry run, and never commit a GitHub token to `.env` or source files.
+
+```powershell
+$env:PHASE3_TERRAFORM_REPO_URL="https://github.com/Nour-Ben-Hadid/finops-infra.git"
+$env:PHASE3_TERRAFORM_REF="main"
+$env:PHASE3_CREATE_PR="1"
+$env:PHASE3_PR_DRAFT="1"
+$env:PHASE3_PR_BASE_BRANCH="main"
+$env:GITHUB_TOKEN="..."
+python scripts\test_phase3_e2e_create_draft_pr.py
+```
+
+The script prints repository metadata, patch file paths and lengths, and the resulting draft PR URL. To verify only the GitHub PR mechanics without depending on the LLM recommendation, additionally set `PHASE3_USE_FAKE_PATCH_FOR_PR_TEST=1`; this adds a timestamped comment to `main.tf` in the draft PR only.
 
 ## Development Notes
 
