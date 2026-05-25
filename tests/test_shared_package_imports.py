@@ -15,6 +15,7 @@ PERSISTENCE_SYMBOLS = (
     "save_phase2_outputs",
     "save_phase3_outputs",
     "complete_optimization_run",
+    "update_optimization_run_status",
 )
 
 

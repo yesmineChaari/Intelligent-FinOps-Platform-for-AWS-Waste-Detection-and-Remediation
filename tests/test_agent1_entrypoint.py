@@ -3,7 +3,7 @@ import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import agent1.main as agent1_main
 from shared.events import (
@@ -43,7 +43,7 @@ class TestAgent1Entrypoint(unittest.IsolatedAsyncioTestCase):
         save_phase1 = AsyncMock()
         run_phase2 = AsyncMock(return_value=["phase2-result"])
         save_phase2 = AsyncMock()
-        complete_run = AsyncMock()
+        update_status = AsyncMock()
         publish_event = AsyncMock(return_value="9-0")
 
         with (
@@ -67,7 +67,7 @@ class TestAgent1Entrypoint(unittest.IsolatedAsyncioTestCase):
             patch.object(agent1_main, "save_phase1_outputs", save_phase1),
             patch.object(agent1_main, "run_phase2", run_phase2),
             patch.object(agent1_main, "save_phase2_outputs", save_phase2),
-            patch.object(agent1_main, "complete_optimization_run", complete_run),
+            patch.object(agent1_main, "update_optimization_run_status", update_status),
             patch.object(agent1_main, "publish_event", publish_event),
         ):
             run_id = await agent1_main.main()
@@ -83,7 +83,14 @@ class TestAgent1Entrypoint(unittest.IsolatedAsyncioTestCase):
         save_phase1.assert_awaited_once_with(conn, 77, ["ec2-result"], ["s3-result"])
         run_phase2.assert_awaited_once_with(conn, ["ec2-result"], rules.phase2)
         save_phase2.assert_awaited_once_with(conn, 77, ["phase2-result"])
-        complete_run.assert_awaited_once_with(conn, 77, status="phase2_completed")
+        self.assertEqual(
+            update_status.await_args_list,
+            [
+                call(conn, 77, "running_phase1"),
+                call(conn, 77, "running_phase2"),
+                call(conn, 77, "waiting_phase3"),
+            ],
+        )
         publish_event.assert_awaited_once_with(
             redis_client,
             OPTIMIZATION_STREAM,
@@ -126,7 +133,7 @@ class TestAgent1Entrypoint(unittest.IsolatedAsyncioTestCase):
             patch.object(agent1_main, "save_phase1_outputs", AsyncMock()),
             patch.object(agent1_main, "run_phase2", AsyncMock(return_value=[])),
             patch.object(agent1_main, "save_phase2_outputs", AsyncMock()),
-            patch.object(agent1_main, "complete_optimization_run", AsyncMock()),
+            patch.object(agent1_main, "update_optimization_run_status", AsyncMock()),
             patch.object(agent1_main, "publish_event", publish_event),
         ):
             await agent1_main.main()
@@ -151,6 +158,38 @@ class TestAgent1Entrypoint(unittest.IsolatedAsyncioTestCase):
             "https://example.test/infrastructure.git",
         )
         self.assertEqual(published_payload["terraform_ref"], "production")
+        self.assertTrue(conn.closed)
+        self.assertTrue(redis_client.closed)
+
+    async def test_failure_sets_safe_failed_status_after_run_exists(self) -> None:
+        conn = FakeConnection()
+        redis_client = FakeRedis()
+        rules = SimpleNamespace(s3="s3-rules", phase2="phase2-rules")
+        update_status = AsyncMock()
+
+        with (
+            patch.dict(
+                os.environ,
+                {"DATABASE_URL": "postgresql://test", "AGENT1_SKIP_WAIT": "true"},
+                clear=True,
+            ),
+            patch.object(agent1_main, "load_rules", Mock(return_value=rules)),
+            patch.object(agent1_main.aioredis, "from_url", return_value=redis_client),
+            patch.object(agent1_main, "connect_database", AsyncMock(return_value=conn)),
+            patch.object(agent1_main, "start_optimization_run", AsyncMock(return_value=99)),
+            patch.object(agent1_main, "update_optimization_run_status", update_status),
+            patch.object(agent1_main, "run_phase1", AsyncMock(side_effect=RuntimeError("secret details"))),
+        ):
+            with self.assertRaises(RuntimeError):
+                await agent1_main.main()
+
+        self.assertEqual(
+            update_status.await_args_list,
+            [
+                call(conn, 99, "running_phase1"),
+                call(conn, 99, "failed", error_message="Deterministic worker failed"),
+            ],
+        )
         self.assertTrue(conn.closed)
         self.assertTrue(redis_client.closed)
 

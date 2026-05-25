@@ -21,10 +21,10 @@ from shared.events import (
     wait_for_event,
 )
 from shared.persistence import (
-    complete_optimization_run,
     save_phase1_outputs,
     save_phase2_outputs,
     start_optimization_run,
+    update_optimization_run_status,
 )
 from shared.settings import env_flag, env_str
 
@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 
 _REDIS_DEFAULT = "redis://localhost:6379"
 _SAFE_TRIGGER_FIELDS = ("workspace_key", "workspace_id", "account_id")
+_SAFE_FAILURE_MESSAGE = "Deterministic worker failed"
 
 
 def _deterministic_event_payload(trigger_payload: dict[str, str], run_id: int) -> dict[str, object]:
@@ -102,14 +103,16 @@ async def main() -> int:
             workspace_key=workspace_key,
             trigger_context=trigger_payload,
         )
+        await update_optimization_run_status(conn, run_id, "running_phase1")
 
         ec2_results = await run_phase1(conn, rules)
         s3_results = await run_s3_phase1(conn, rules.s3)
         await save_phase1_outputs(conn, run_id, ec2_results, s3_results)
 
+        await update_optimization_run_status(conn, run_id, "running_phase2")
         phase2_results = await run_phase2(conn, ec2_results, rules.phase2)
         await save_phase2_outputs(conn, run_id, phase2_results)
-        await complete_optimization_run(conn, run_id, status="phase2_completed")
+        await update_optimization_run_status(conn, run_id, "waiting_phase3")
 
         await publish_event(
             redis_client,
@@ -118,14 +121,14 @@ async def main() -> int:
             _deterministic_event_payload(trigger_payload, run_id),
         )
         return run_id
-    except Exception as exc:
+    except Exception:
         if conn is not None and run_id is not None:
             try:
-                await complete_optimization_run(
+                await update_optimization_run_status(
                     conn,
                     run_id,
-                    status="failed",
-                    error_message=str(exc),
+                    "failed",
+                    error_message=_SAFE_FAILURE_MESSAGE,
                 )
             except Exception:
                 log.exception("Failed to mark deterministic optimization run as failed")

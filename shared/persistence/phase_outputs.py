@@ -306,6 +306,37 @@ async def complete_optimization_run(
     )
 
 
+async def update_optimization_run_status(
+    conn: asyncpg.Connection,
+    run_id: int,
+    status: str,
+    error_message: str | None = None,
+) -> None:
+    try:
+        await conn.execute(
+            """
+            UPDATE optimization_runs
+            SET status = $2,
+                error_message = $3
+            WHERE id = $1
+            """,
+            run_id,
+            status,
+            error_message,
+        )
+    except asyncpg.UndefinedColumnError:
+        # Legacy optimization_runs tables may predate error_message.
+        await conn.execute(
+            """
+            UPDATE optimization_runs
+            SET status = $2
+            WHERE id = $1
+            """,
+            run_id,
+            status,
+        )
+
+
 async def _load_s3_resource_ids(conn: asyncpg.Connection, bucket_names: Iterable[str]) -> dict[str, int]:
     names = sorted({name for name in bucket_names if name})
     if not names:

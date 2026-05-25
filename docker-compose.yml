@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  localstack:
+    image: localstack/localstack:3.0
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: ec2,s3,dynamodb,cloudwatch
+      DEFAULT_REGION: eu-west-1
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+
+  agent0:
+    build:
+      context: ./agent0/app
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      LOCALSTACK_ENDPOINT: http://localstack:4566
+      AWS_REGION: eu-west-1
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+      - localstack
+    volumes:
+      - ./agent0/app:/app
+
+  agent1:
+    build:
+      context: .
+      dockerfile: agent1/Dockerfile
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      RULES_PATH: /app/rules.yaml
+    depends_on:
+      - redis
+      - agent0
+
+  agent2:
+    build:
+      context: .
+      dockerfile: agent2/Dockerfile
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+      - agent1

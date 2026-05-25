@@ -1,10 +1,14 @@
 import unittest
 
+import asyncpg
+
 from persistence.phase_outputs import (
+    complete_optimization_run,
     save_phase1_outputs,
     save_phase2_outputs,
     save_phase3_outputs,
     start_optimization_run,
+    update_optimization_run_status,
 )
 from phase1.models import Phase1Result, WasteAction, WasteType
 from phase1.s3_models import S3Action, S3FindingResult, S3WasteType
@@ -14,10 +18,12 @@ from phase2.models import Phase2Result
 class FakeConn:
     def __init__(self) -> None:
         self.executed: list[str] = []
+        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
         self.executemany_calls: list[tuple[str, list[tuple]]] = []
 
     async def execute(self, query: str, *args):
         self.executed.append(query)
+        self.execute_calls.append((query, args))
         return None
 
     async def executemany(self, query: str, rows):
@@ -32,6 +38,15 @@ class FakeConn:
     async def fetchrow(self, query: str, *args):
         if "RETURNING id" in query:
             return {"id": 123}
+        return None
+
+
+class MissingErrorMessageConn(FakeConn):
+    async def execute(self, query: str, *args):
+        self.executed.append(query)
+        self.execute_calls.append((query, args))
+        if "error_message = $3" in query:
+            raise asyncpg.UndefinedColumnError("error_message does not exist")
         return None
 
 
@@ -52,6 +67,38 @@ class TestPhaseOutputPersistence(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(run_id, 123)
         self.assertTrue(any("optimization_runs" in query for query in conn.executed))
+
+    async def test_update_optimization_run_status_updates_status_and_error_by_run_id(self) -> None:
+        conn = FakeConn()
+
+        await update_optimization_run_status(conn, 123, "failed", "safe worker failure")
+
+        query, args = conn.execute_calls[0]
+        self.assertIn("UPDATE optimization_runs", query)
+        self.assertIn("status = $2", query)
+        self.assertIn("error_message = $3", query)
+        self.assertEqual(args, (123, "failed", "safe worker failure"))
+
+    async def test_update_optimization_run_status_falls_back_without_error_message_column(self) -> None:
+        conn = MissingErrorMessageConn()
+
+        await update_optimization_run_status(conn, 123, "running_phase1")
+
+        self.assertEqual(len(conn.execute_calls), 2)
+        fallback_query, fallback_args = conn.execute_calls[1]
+        self.assertIn("UPDATE optimization_runs", fallback_query)
+        self.assertIn("status = $2", fallback_query)
+        self.assertNotIn("error_message", fallback_query)
+        self.assertEqual(fallback_args, (123, "running_phase1"))
+
+    async def test_complete_optimization_run_retains_final_completion_behavior(self) -> None:
+        conn = FakeConn()
+
+        await complete_optimization_run(conn, 123, status="completed")
+
+        query, args = conn.execute_calls[0]
+        self.assertIn("completed_at = NOW()", query)
+        self.assertEqual(args, (123, "completed", None, None))
 
     async def test_save_phase1_outputs_separates_ec2_and_s3(self) -> None:
         conn = FakeConn()

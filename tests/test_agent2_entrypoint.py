@@ -2,7 +2,7 @@ import ast
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import agent2.main as agent2_main
 from shared.events import (
@@ -37,9 +37,11 @@ class TestAgent2Entrypoint(unittest.IsolatedAsyncioTestCase):
         s3_results = [{"bucket_name": "bucket-a"}]
         phase2_results = [{"resource_id": 1}]
         phase3_output = {"runs": []}
+        execution_order: list[str] = []
         wait_for_event = AsyncMock()
-        run_phase3 = Mock(return_value=phase3_output)
+        run_phase3 = Mock(side_effect=lambda *args, **kwargs: execution_order.append("phase3") or phase3_output)
         save_phase3 = AsyncMock()
+        update_status = AsyncMock(side_effect=lambda *args, **kwargs: execution_order.append("running_phase3"))
         complete_run = AsyncMock()
         publish_event = AsyncMock(return_value="10-0")
 
@@ -63,6 +65,7 @@ class TestAgent2Entrypoint(unittest.IsolatedAsyncioTestCase):
             patch.object(agent2_main, "load_phase2_ec2_outputs", AsyncMock(return_value=phase2_results)) as load_p2,
             patch.object(agent2_main, "run_phase3_llm", run_phase3),
             patch.object(agent2_main, "save_phase3_outputs", save_phase3),
+            patch.object(agent2_main, "update_optimization_run_status", update_status),
             patch.object(agent2_main, "complete_optimization_run", complete_run),
             patch.object(agent2_main, "publish_event", publish_event),
         ):
@@ -93,6 +96,8 @@ class TestAgent2Entrypoint(unittest.IsolatedAsyncioTestCase):
             phase2_results=phase2_results,
             s3_results=s3_results,
         )
+        update_status.assert_awaited_once_with(conn, 55, "running_phase3")
+        self.assertLess(execution_order.index("running_phase3"), execution_order.index("phase3"))
         complete_run.assert_awaited_once_with(conn, 55, status="completed")
         publish_event.assert_awaited_once_with(
             redis_client,
@@ -133,6 +138,7 @@ class TestAgent2Entrypoint(unittest.IsolatedAsyncioTestCase):
             patch.object(agent2_main, "load_phase2_ec2_outputs", AsyncMock(return_value=[])),
             patch.object(agent2_main, "run_phase3_llm", run_phase3),
             patch.object(agent2_main, "save_phase3_outputs", AsyncMock()),
+            patch.object(agent2_main, "update_optimization_run_status", AsyncMock()),
             patch.object(agent2_main, "complete_optimization_run", AsyncMock()),
             patch.object(agent2_main, "publish_event", AsyncMock()),
         ):
@@ -156,7 +162,7 @@ class TestAgent2Entrypoint(unittest.IsolatedAsyncioTestCase):
     async def test_phase3_failure_marks_run_failed_and_publishes_safe_event(self) -> None:
         conn = FakeConnection()
         redis_client = FakeRedis()
-        complete_run = AsyncMock()
+        update_status = AsyncMock()
         publish_event = AsyncMock(return_value="failed-0")
 
         with (
@@ -172,18 +178,19 @@ class TestAgent2Entrypoint(unittest.IsolatedAsyncioTestCase):
             patch.object(agent2_main, "load_phase2_ec2_outputs", AsyncMock(return_value=[])),
             patch.object(agent2_main, "run_phase3_llm", Mock(side_effect=RuntimeError("secret details"))),
             patch.object(agent2_main, "save_phase3_outputs", AsyncMock()) as save_phase3,
-            patch.object(agent2_main, "complete_optimization_run", complete_run),
+            patch.object(agent2_main, "update_optimization_run_status", update_status),
             patch.object(agent2_main, "publish_event", publish_event),
         ):
             with self.assertRaises(RuntimeError):
                 await agent2_main.main()
 
         save_phase3.assert_not_awaited()
-        complete_run.assert_awaited_once_with(
-            conn,
-            99,
-            status="phase3_failed",
-            error_message="Phase 3 worker failed",
+        self.assertEqual(
+            update_status.await_args_list,
+            [
+                call(conn, 99, "running_phase3"),
+                call(conn, 99, "phase3_failed", error_message="Phase 3 worker failed"),
+            ],
         )
         publish_event.assert_awaited_once_with(
             redis_client,

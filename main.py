@@ -172,6 +172,11 @@ async def wait_for_trigger(redis_client: aioredis.Redis) -> dict[str, str]:
 
 
 async def main():
+    log.info(
+        "main.py is the legacy single-process entrypoint. "
+        "For containerized execution, use docker compose with agent1 and agent2."
+    )
+
     # ── Configuration ─────────────────────────────────────────────────────
     neon_db_url = os.environ.get("NEON_DATABASE_URL")
     if not neon_db_url:

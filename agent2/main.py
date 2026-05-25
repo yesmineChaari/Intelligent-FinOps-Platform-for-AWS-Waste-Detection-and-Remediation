@@ -23,6 +23,7 @@ from shared.persistence import (
     load_phase1_s3_outputs,
     load_phase2_ec2_outputs,
     save_phase3_outputs,
+    update_optimization_run_status,
 )
 from shared.settings import env_str
 
@@ -99,6 +100,7 @@ async def main() -> int:
             run_id = _parse_run_id(event_payload.get("run_id"))
 
         conn = await connect_database(database_url)
+        await update_optimization_run_status(conn, run_id, "running_phase3")
         ec2_phase1_results = await load_phase1_ec2_outputs(conn, run_id)
         s3_phase1_results = await load_phase1_s3_outputs(conn, run_id)
         ec2_phase2_results = await load_phase2_ec2_outputs(conn, run_id)
@@ -129,10 +131,10 @@ async def main() -> int:
     except Exception:
         if conn is not None and run_id is not None:
             try:
-                await complete_optimization_run(
+                await update_optimization_run_status(
                     conn,
                     run_id,
-                    status="phase3_failed",
+                    "phase3_failed",
                     error_message=_SAFE_FAILURE_MESSAGE,
                 )
             except Exception:

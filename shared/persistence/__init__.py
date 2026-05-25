@@ -7,6 +7,7 @@ from .phase_outputs import (
     save_phase2_outputs,
     save_phase3_outputs,
     start_optimization_run,
+    update_optimization_run_status,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "save_phase2_outputs",
     "save_phase3_outputs",
     "start_optimization_run",
+    "update_optimization_run_status",
 ]
