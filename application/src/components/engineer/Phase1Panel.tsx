@@ -11,6 +11,10 @@ interface EC2Row {
   waste_per_month: number | null;
   detection_reason: string | null;
   metrics: Record<string, unknown>;
+  region: string | null;
+  avg_cpu: number | null;
+  avg_ram: number | null;
+  telemetry_p95_cpu: number | null;
 }
 
 interface S3Row {
@@ -21,6 +25,22 @@ interface S3Row {
   detection_reason: string | null;
   recommended_action: string | null;
   metrics: Record<string, unknown>;
+  region: string | null;
+  inv_object_count: number | null;
+  inv_size_bytes: number | null;
+}
+
+function fmtPct(v: number | null) {
+  if (v == null) return '—';
+  return `${Number(v).toFixed(1)}%`;
+}
+
+function fmtBytes(bytes: number | null) {
+  if (bytes == null) return '—';
+  if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(1)} TB`;
+  if (bytes >= 1e9)  return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6)  return `${(bytes / 1e6).toFixed(1)} MB`;
+  return `${bytes} B`;
 }
 
 const ACTION_BADGE: Record<string, string> = {
@@ -64,9 +84,13 @@ export default function Phase1Panel({ ec2, s3 }: { ec2: EC2Row[]; s3: S3Row[] })
               <thead>
                 <tr className="border-b border-gray-800">
                   <th className="text-left px-6 py-3 text-gray-400 font-medium">Instance</th>
+                  <th className="text-left px-6 py-3 text-gray-400 font-medium">Region</th>
                   <th className="text-left px-6 py-3 text-gray-400 font-medium">Role</th>
                   <th className="text-left px-6 py-3 text-gray-400 font-medium">Action</th>
                   <th className="text-left px-6 py-3 text-gray-400 font-medium">Type change</th>
+                  <th className="text-right px-6 py-3 text-gray-400 font-medium">CPU avg</th>
+                  <th className="text-right px-6 py-3 text-gray-400 font-medium">CPU p95</th>
+                  <th className="text-right px-6 py-3 text-gray-400 font-medium">RAM avg</th>
                   <th className="text-right px-6 py-3 text-gray-400 font-medium">Waste / mo</th>
                   <th className="text-left px-6 py-3 text-gray-400 font-medium">Reason</th>
                 </tr>
@@ -75,6 +99,7 @@ export default function Phase1Panel({ ec2, s3 }: { ec2: EC2Row[]; s3: S3Row[] })
                 {ec2.map(row => (
                   <tr key={row.id} className="border-b border-gray-800/50 hover:bg-gray-800/20 transition-colors">
                     <td className="px-6 py-4 font-mono text-xs text-white">{row.resource_name ?? '—'}</td>
+                    <td className="px-6 py-4 text-gray-400 text-xs">{row.region ?? '—'}</td>
                     <td className="px-6 py-4 text-gray-400 text-xs">{row.role ?? '—'}</td>
                     <td className="px-6 py-4"><Badge text={row.action} /></td>
                     <td className="px-6 py-4 text-gray-300 text-xs">
@@ -87,6 +112,9 @@ export default function Phase1Panel({ ec2, s3 }: { ec2: EC2Row[]; s3: S3Row[] })
                         </>
                       ) : '—'}
                     </td>
+                    <td className="px-6 py-4 text-right text-xs text-gray-300">{fmtPct(row.avg_cpu)}</td>
+                    <td className="px-6 py-4 text-right text-xs text-gray-300">{fmtPct(row.telemetry_p95_cpu)}</td>
+                    <td className="px-6 py-4 text-right text-xs text-gray-300">{fmtPct(row.avg_ram)}</td>
                     <td className="px-6 py-4 text-right font-medium text-yellow-400">
                       {row.waste_per_month ? `$${Number(row.waste_per_month).toFixed(0)}` : '—'}
                     </td>
@@ -112,8 +140,11 @@ export default function Phase1Panel({ ec2, s3 }: { ec2: EC2Row[]; s3: S3Row[] })
               <thead>
                 <tr className="border-b border-gray-800">
                   <th className="text-left px-6 py-3 text-gray-400 font-medium">Bucket</th>
+                  <th className="text-left px-6 py-3 text-gray-400 font-medium">Region</th>
                   <th className="text-left px-6 py-3 text-gray-400 font-medium">Waste type</th>
                   <th className="text-left px-6 py-3 text-gray-400 font-medium">Action</th>
+                  <th className="text-right px-6 py-3 text-gray-400 font-medium">Objects</th>
+                  <th className="text-right px-6 py-3 text-gray-400 font-medium">Size</th>
                   <th className="text-right px-6 py-3 text-gray-400 font-medium">Est. savings / mo</th>
                   <th className="text-left px-6 py-3 text-gray-400 font-medium">Reason</th>
                 </tr>
@@ -122,8 +153,13 @@ export default function Phase1Panel({ ec2, s3 }: { ec2: EC2Row[]; s3: S3Row[] })
                 {s3.map(row => (
                   <tr key={row.id} className="border-b border-gray-800/50 hover:bg-gray-800/20 transition-colors">
                     <td className="px-6 py-4 font-mono text-xs text-white">{row.bucket_name}</td>
+                    <td className="px-6 py-4 text-gray-400 text-xs">{row.region ?? '—'}</td>
                     <td className="px-6 py-4 text-gray-400 text-xs">{row.waste_type}</td>
                     <td className="px-6 py-4"><Badge text={row.action} /></td>
+                    <td className="px-6 py-4 text-right text-xs text-gray-300">
+                      {row.inv_object_count != null ? row.inv_object_count.toLocaleString() : '—'}
+                    </td>
+                    <td className="px-6 py-4 text-right text-xs text-gray-300">{fmtBytes(row.inv_size_bytes)}</td>
                     <td className="px-6 py-4 text-right font-medium text-yellow-400">
                       {row.metrics?.estimated_monthly_savings
                         ? `$${Number(row.metrics.estimated_monthly_savings).toFixed(2)}`

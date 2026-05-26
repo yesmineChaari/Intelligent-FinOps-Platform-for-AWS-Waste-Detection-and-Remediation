@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import MetricCard from '@/components/business/MetricCard';
 import WasteBreakdownChart from '@/components/business/WasteBreakdownChart';
+import SavingsTrendChart from '@/components/business/SavingsTrendChart';
 import RecentRunsTable from '@/components/business/RecentRunsTable';
 
 interface Summary {
@@ -11,13 +12,7 @@ interface Summary {
   total_runs: number;
   ec2_flagged: number;
   s3_flagged: number;
-}
-
-interface WasteItem {
-  waste_type: string;
-  action: string;
-  count: number;
-  total_savings: number;
+  blocked_count: number;
 }
 
 function Spinner() {
@@ -29,11 +24,12 @@ function Spinner() {
 }
 
 export default function BusinessDashboard() {
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [wasteBreakdown, setWasteBreakdown] = useState<WasteItem[]>([]);
-  const [runs, setRuns] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [summary,        setSummary]        = useState<Summary | null>(null);
+  const [wasteBreakdown, setWasteBreakdown] = useState<any[]>([]);
+  const [trend,          setTrend]          = useState<any[]>([]);
+  const [runs,           setRuns]           = useState<any[]>([]);
+  const [loading,        setLoading]        = useState(true);
+  const [error,          setError]          = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -43,6 +39,7 @@ export default function BusinessDashboard() {
       .then(([costsData, runsData]) => {
         setSummary(costsData.summary ?? null);
         setWasteBreakdown(costsData.wasteBreakdown ?? []);
+        setTrend(costsData.trend ?? []);
         setRuns(Array.isArray(runsData) ? runsData : []);
       })
       .catch(e => setError(String(e)))
@@ -50,7 +47,6 @@ export default function BusinessDashboard() {
   }, []);
 
   if (loading) return <Spinner />;
-
   if (error) {
     return (
       <div className="bg-red-950 border border-red-800 rounded-xl p-6 text-red-300 text-sm">
@@ -67,88 +63,46 @@ export default function BusinessDashboard() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-white">Cost Overview</h1>
-        <p className="text-gray-400 text-sm mt-1">
-          AWS infrastructure waste detection &amp; savings potential
-        </p>
+        <p className="text-gray-400 text-sm mt-1">AWS infrastructure waste detection &amp; savings potential</p>
       </div>
 
-      {/* Metric cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          label="Total Savings Potential"
-          value={`$${total.toFixed(0)}/mo`}
-          sublabel="EC2 + S3 combined"
-          color="green"
-          icon="💰"
-        />
-        <MetricCard
-          label="EC2 Savings"
-          value={`$${ec2Savings.toFixed(0)}/mo`}
-          sublabel={`${summary?.ec2_flagged ?? 0} instances flagged`}
-          color="blue"
-          icon="⚡"
-        />
-        <MetricCard
-          label="S3 Savings"
-          value={`$${s3Savings.toFixed(0)}/mo`}
-          sublabel={`${summary?.s3_flagged ?? 0} buckets flagged`}
-          color="purple"
-          icon="🪣"
-        />
-        <MetricCard
-          label="Optimization Runs"
-          value={String(summary?.completed_runs ?? 0)}
-          sublabel={`${summary?.total_runs ?? 0} total (incl. running)`}
-          color="yellow"
-          icon="🔄"
-        />
+        <MetricCard label="Total Savings Potential" value={`$${total.toFixed(0)}/mo`}
+          sublabel="EC2 + S3 combined" color="green" />
+        <MetricCard label="EC2 Savings" value={`$${ec2Savings.toFixed(0)}/mo`}
+          sublabel={`${summary?.ec2_flagged ?? 0} instances flagged`} color="blue" />
+        <MetricCard label="S3 Savings" value={`$${s3Savings.toFixed(0)}/mo`}
+          sublabel={`${summary?.s3_flagged ?? 0} buckets flagged`} color="purple" />
+        <MetricCard label="Blocked by Guardrails" value={String(summary?.blocked_count ?? 0)}
+          sublabel="Requires manual review" color="yellow" />
       </div>
 
-      {/* Chart + savings summary */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        <div className="lg:col-span-3">
-          <WasteBreakdownChart data={wasteBreakdown} />
-        </div>
-        <div className="lg:col-span-2">
-          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-full">
-            <h3 className="text-white font-semibold mb-4">Savings by Category</h3>
-            <div className="space-y-3">
-              {wasteBreakdown.map(item => (
-                <div
-                  key={`${item.waste_type}-${item.action}`}
-                  className="flex items-center justify-between"
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`w-2 h-2 rounded-full ${
-                        item.waste_type === 'zombie'   ? 'bg-red-500' :
-                        item.waste_type === 'idle'     ? 'bg-orange-500' :
-                        item.waste_type === 'oversized'? 'bg-yellow-500' :
-                        'bg-gray-500'
-                      }`}
-                    />
-                    <span className="text-gray-300 text-sm capitalize">{item.waste_type}</span>
-                    <span className="text-gray-600 text-xs">×{item.count}</span>
-                  </div>
-                  <span className="text-green-400 font-medium text-sm">
-                    ${Number(item.total_savings).toFixed(0)}/mo
-                  </span>
-                </div>
-              ))}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <SavingsTrendChart data={trend} />
+        <WasteBreakdownChart data={wasteBreakdown} />
+      </div>
 
-              {wasteBreakdown.length === 0 && (
-                <p className="text-gray-500 text-sm">No waste detected yet</p>
-              )}
-
-              {wasteBreakdown.length > 0 && (
-                <div className="pt-3 border-t border-gray-800 flex items-center justify-between">
-                  <span className="text-white font-semibold">Total</span>
-                  <span className="text-green-400 font-bold text-xl">${total.toFixed(0)}/mo</span>
-                </div>
-              )}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 className="text-white font-semibold mb-4">Savings by Category</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+          {wasteBreakdown.filter(item => Number(item.total_savings) > 0).map(item => (
+            <div key={`${item.waste_type}-${item.action}`}
+              className="bg-gray-800/50 rounded-lg p-4 text-center">
+              <p className="text-green-400 font-bold text-lg">${Number(item.total_savings).toFixed(0)}</p>
+              <p className="text-gray-300 text-xs mt-1 capitalize">{item.waste_type}</p>
+              <p className="text-gray-600 text-xs">{item.count} instance{item.count !== 1 ? 's' : ''}</p>
             </div>
-          </div>
+          ))}
+          {wasteBreakdown.filter(item => Number(item.total_savings) > 0).length === 0 && (
+            <p className="text-gray-500 text-sm col-span-full">No savings detected yet</p>
+          )}
         </div>
+        {total > 0 && (
+          <div className="mt-4 pt-4 border-t border-gray-800 flex justify-between items-center">
+            <span className="text-gray-400">Total potential</span>
+            <span className="text-green-400 font-bold text-xl">${total.toFixed(0)}/mo</span>
+          </div>
+        )}
       </div>
 
       <RecentRunsTable runs={runs} />
