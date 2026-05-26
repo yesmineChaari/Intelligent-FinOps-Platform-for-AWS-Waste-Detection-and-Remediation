@@ -291,7 +291,7 @@ async def _detect_bursty(
             **(_flatten_sizing(sizing, instance_type, instance)),
         )
 
-    return _clean(resource_id, resource_name, role, f"P99 CPU {metrics['p99_cpu']:.1f}% exceeded threshold.", metrics)
+    return _clean(resource_id, resource_name, role, f"p99 CPU {metrics['p99_cpu']:.1f}% exceeded threshold of idle p99 cpu threshhold.", metrics)
 
 
 async def _detect_steady(
