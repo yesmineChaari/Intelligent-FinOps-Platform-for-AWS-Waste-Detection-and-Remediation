@@ -28,7 +28,7 @@ export async function GET() {
     cleanEnv(process.env.GITHUB_REPO)
     || cleanEnv(process.env.PHASE3_TERRAFORM_REPO_URL);
   const repo = configuredRepo ? parseGitHubRepo(configuredRepo) : null;
-  const token = cleanEnv(process.env.GITHUB_TOKEN);
+  const token = cleanEnv(process.env.GITHUB_TOKEN) || cleanEnv(process.env.GH_TOKEN) || cleanEnv(process.env.GITHUB_PAT);
 
   if (!repo) {
     return NextResponse.json(
@@ -48,7 +48,7 @@ export async function GET() {
       `https://api.github.com/repos/${repo}/pulls?state=all&per_page=50&sort=created&direction=desc`,
       {
         headers,
-        next: { revalidate: 60 },
+        cache: 'no-store',
       },
     );
 

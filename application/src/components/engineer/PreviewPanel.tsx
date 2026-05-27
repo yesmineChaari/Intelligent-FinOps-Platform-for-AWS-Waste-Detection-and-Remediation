@@ -237,7 +237,7 @@ export default function PreviewPanel({
       });
       const data = await res.json();
       if (!res.ok) setMessage(data?.error ?? 'Approval failed.');
-      else setMessage('Pull request created.');
+      else setMessage(data?.message ?? 'Pull request created.');
       onRefresh();
     } catch (error) {
       setMessage(String(error));

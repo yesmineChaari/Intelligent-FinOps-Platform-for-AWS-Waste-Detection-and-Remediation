@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { createPullRequestFromPreview } from '@/lib/github-preview-pr';
 import { getLatestPreview } from '@/lib/phase3-preview';
+import { MOCK_RUN_ID, getMockPreview, setMockPreview } from '@/lib/mock-run';
 
 export const runtime = 'nodejs';
 
@@ -13,6 +14,22 @@ export async function POST(req: Request, { params }: { params: Promise<{ runId: 
   const body = await req.json().catch(() => ({}));
   const approvedBy = typeof body?.approvedBy === 'string' ? body.approvedBy.slice(0, 120) : 'dashboard_user';
   const note = typeof body?.note === 'string' ? body.note.slice(0, 1000) : null;
+
+  if (runId === MOCK_RUN_ID) {
+    const preview = setMockPreview({
+      ...getMockPreview(),
+      status: 'mock_approved',
+      approved_by: approvedBy,
+      approval_note: note,
+      approved_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      pr_errors: [],
+    });
+    return NextResponse.json({
+      preview,
+      message: 'Mock approval recorded; no GitHub pull request was created.',
+    });
+  }
 
   try {
     const preview = await getLatestPreview(runId);

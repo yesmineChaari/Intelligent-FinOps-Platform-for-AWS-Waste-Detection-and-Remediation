@@ -58,17 +58,29 @@ export default function EngineerInterface() {
       });
   }
 
+  function loadPrs() {
+    setPrsError(undefined);
+    return fetch('/api/prs', { cache: 'no-store' })
+      .then(async r => {
+        const text = await r.text();
+        let data: any;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error(text.slice(0, 240) || `HTTP ${r.status}`);
+        }
+        if (!r.ok || data?.error) throw new Error(data?.error ?? `HTTP ${r.status}`);
+        return data;
+      })
+      .then(data => setPrs(Array.isArray(data) ? data : []))
+      .catch(e => setPrsError(String(e).replace(/^Error: /, '')));
+  }
+
   useEffect(() => {
     loadRuns()
       .finally(() => setRunsLoading(false));
 
-    fetch('/api/prs')
-      .then(r => r.json())
-      .then(data => {
-        if (data?.error) setPrsError(data.error);
-        else setPrs(Array.isArray(data) ? data : []);
-      })
-      .catch(e => setPrsError(String(e)));
+    loadPrs();
 
     fetch('/api/alerts')
       .then(r => r.json())
@@ -78,6 +90,10 @@ export default function EngineerInterface() {
       })
       .catch(e => setAlertsError(String(e)));
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'prs') loadPrs();
+  }, [activeTab]);
 
   useEffect(() => {
     if (!selectedRunId) return;
@@ -179,7 +195,10 @@ export default function EngineerInterface() {
                 <PreviewPanel
                   preview={previewData?.preview ?? null}
                   ec2Waste={llmData?.ec2Waste ?? []}
-                  onRefresh={refreshPreview}
+                  onRefresh={() => {
+                    refreshPreview();
+                    loadPrs();
+                  }}
                 />
               )}
               {activeTab === 'prs' && <PRListPanel prs={prs} error={prsError} />}
