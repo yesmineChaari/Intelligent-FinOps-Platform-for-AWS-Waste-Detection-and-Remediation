@@ -5,5 +5,9 @@ __pycache__/
 .phase2_test_report_llm.txt
 .project_context_summary.txt
 AGENTS.md
+application/.next/
+application/.analysis/
+application/node_modules/
+application/next-main*.log
 .gitignore
 output

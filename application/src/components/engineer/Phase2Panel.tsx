@@ -1,3 +1,5 @@
+import ActionBadge from './ActionBadge';
+
 interface Phase2Row {
   id: number;
   instance_name: string | null;
@@ -13,22 +15,6 @@ interface Phase2Row {
   waste_per_month: number | null;
   skip_write: boolean;
   block_reason: string | null;
-}
-
-const ACTION_BADGE: Record<string, string> = {
-  TERMINATE: 'bg-red-900/60 text-red-300',
-  STOP:      'bg-orange-900/60 text-orange-300',
-  DOWNSIZE:  'bg-yellow-900/60 text-yellow-300',
-  REVIEW:    'bg-blue-900/60 text-blue-300',
-  SKIP:      'bg-gray-800 text-gray-500',
-};
-
-function Badge({ text }: { text: string }) {
-  return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${ACTION_BADGE[text] ?? 'bg-gray-800 text-gray-400'}`}>
-      {text}
-    </span>
-  );
 }
 
 function BlastBar({ score }: { score: number }) {
@@ -78,8 +64,8 @@ export default function Phase2Panel({ data }: { data: Phase2Row[] }) {
                   <div className="text-white font-mono text-xs">{row.instance_name ?? '—'}</div>
                   <div className="text-gray-500 text-xs mt-0.5">{row.role} · {row.waste_type}</div>
                 </td>
-                <td className="px-6 py-4"><Badge text={row.phase1_action} /></td>
-                <td className="px-6 py-4"><Badge text={row.action} /></td>
+                <td className="px-6 py-4"><ActionBadge action={row.phase1_action} /></td>
+                <td className="px-6 py-4"><ActionBadge action={row.action} /></td>
                 <td className="px-6 py-4"><BlastBar score={row.blast_radius} /></td>
                 <td className="px-6 py-4">
                   {row.phase2_action_changed

@@ -1,0 +1,157 @@
+import type { PatchPreviewRow, PreviewFile } from '@/lib/phase3-preview';
+
+interface PullRequestResult {
+  branchName: string;
+  prUrl: string;
+  changedFiles: string[];
+}
+
+const GITHUB_API = 'https://api.github.com';
+
+function cleanEnv(value: string | undefined) {
+  return (value ?? '').trim().replace(/^['"]|['"]$/g, '');
+}
+
+function parseGitHubRepo(value: string) {
+  const input = value.trim();
+  const short = input.match(/^([^/\s]+)\/([^/\s]+)$/);
+  if (short) return { owner: short[1], repo: short[2].replace(/\.git$/, '') };
+
+  const ssh = input.match(/^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
+  if (ssh) return { owner: ssh[1], repo: ssh[2] };
+
+  const url = new URL(input);
+  if (url.hostname.toLowerCase() !== 'github.com') {
+    throw new Error(`Unsupported GitHub host: ${url.hostname}`);
+  }
+  const parts = url.pathname.replace(/^\/|\/$/g, '').replace(/\.git$/, '').split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error(`Invalid GitHub repository URL: ${value}`);
+  }
+  return { owner: parts[0], repo: parts[1] };
+}
+
+function normalizeBaseRef(value: string | null) {
+  return (value || cleanEnv(process.env.PHASE3_TERRAFORM_REF) || 'main')
+    .replace(/^refs\/heads\//, '')
+    .trim();
+}
+
+function normalizeFilePath(filePath: string) {
+  const normalized = filePath.trim().replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalized || normalized.includes('..') || !normalized.endsWith('.tf')) {
+    throw new Error(`Unsafe Terraform file path: ${filePath}`);
+  }
+  return normalized;
+}
+
+async function githubRequest<T>(
+  token: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const res = await fetch(`${GITHUB_API}${path}`, {
+    ...init,
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(init.headers ?? {}),
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`GitHub ${res.status}: ${body.slice(0, 300)}`);
+  }
+  return (await res.json()) as T;
+}
+
+function encodeContent(value: string) {
+  return Buffer.from(value, 'utf8').toString('base64');
+}
+
+async function getFileSha(
+  token: string,
+  owner: string,
+  repo: string,
+  filePath: string,
+  ref: string,
+) {
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+  try {
+    const content = await githubRequest<{ sha?: string }>(
+      token,
+      `/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
+    );
+    return content.sha;
+  } catch (error) {
+    const message = String(error);
+    if (message.includes('GitHub 404')) return undefined;
+    throw error;
+  }
+}
+
+function usableFiles(files: PreviewFile[]) {
+  return files.map(file => ({
+    file_path: normalizeFilePath(file.file_path),
+    new_content: file.new_content,
+  }));
+}
+
+export async function createPullRequestFromPreview(preview: PatchPreviewRow): Promise<PullRequestResult> {
+  const token = cleanEnv(process.env.GITHUB_TOKEN) || cleanEnv(process.env.GH_TOKEN) || cleanEnv(process.env.GITHUB_PAT);
+  if (!token) throw new Error('GITHUB_TOKEN, GH_TOKEN, or GITHUB_PAT is required to create a pull request.');
+
+  const repoValue = preview.source_repo_url || cleanEnv(process.env.PHASE3_TERRAFORM_REPO_URL) || cleanEnv(process.env.GITHUB_REPO);
+  if (!repoValue) throw new Error('No Terraform GitHub repository is configured for this preview.');
+
+  const { owner, repo } = parseGitHubRepo(repoValue);
+  const baseRef = normalizeBaseRef(preview.source_ref);
+  const branchName = `finops/phase3-${preview.run_id}-${Date.now()}`;
+  const files = usableFiles(preview.modified_files || []);
+  if (!files.length) throw new Error('Preview has no Terraform file changes.');
+
+  const base = await githubRequest<{ object: { sha: string } }>(
+    token,
+    `/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(baseRef)}`,
+  );
+
+  await githubRequest(token, `/repos/${owner}/${repo}/git/refs`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ref: `refs/heads/${branchName}`,
+      sha: base.object.sha,
+    }),
+  });
+
+  for (const file of files) {
+    const sha = await getFileSha(token, owner, repo, file.file_path, branchName);
+    await githubRequest(token, `/repos/${owner}/${repo}/contents/${file.file_path.split('/').map(encodeURIComponent).join('/')}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        message: `Apply Phase 3 preview for run ${preview.run_id}: ${file.file_path}`,
+        content: encodeContent(file.new_content),
+        branch: branchName,
+        sha,
+      }),
+    });
+  }
+
+  const pr = await githubRequest<{ html_url: string }>(token, `/repos/${owner}/${repo}/pulls`, {
+    method: 'POST',
+    body: JSON.stringify({
+      title: preview.pr_title || 'Apply Phase 3 FinOps Terraform optimization',
+      body: preview.pr_description || 'Automated Terraform patch generated by PFA Phase 3 after user approval.',
+      head: branchName,
+      base: baseRef,
+      draft: true,
+    }),
+  });
+
+  return {
+    branchName,
+    prUrl: pr.html_url,
+    changedFiles: files.map(file => file.file_path),
+  };
+}

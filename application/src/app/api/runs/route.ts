@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
+import { mockRun } from '@/lib/mock-run';
 
 export async function GET() {
   try {
@@ -24,7 +25,7 @@ export async function GET() {
       ORDER BY r.started_at DESC
       LIMIT 50
     `;
-    return NextResponse.json(rows);
+    return NextResponse.json([mockRun, ...rows]);
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }

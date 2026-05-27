@@ -1,24 +1,28 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import RunSelector from '@/components/engineer/RunSelector';
 import Phase1Panel from '@/components/engineer/Phase1Panel';
 import Phase2Panel from '@/components/engineer/Phase2Panel';
 import LLMReportPanel from '@/components/engineer/LLMReportPanel';
+import AnalyzeControl from '@/components/engineer/AnalyzeControl';
+import PreviewPanel from '@/components/engineer/PreviewPanel';
 import PRListPanel from '@/components/engineer/PRListPanel';
 import AlertsPanel from '@/components/engineer/AlertsPanel';
 
-type Tab = 'phase1' | 'phase2' | 'llm' | 'prs' | 'alerts';
+type Tab = 'phase1' | 'phase2' | 'llm' | 'preview' | 'prs' | 'alerts';
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'phase1',  label: 'Phase 1 — Detection' },
-  { id: 'phase2',  label: 'Phase 2 — Guardrails' },
-  { id: 'llm',     label: 'LLM Report' },
-  { id: 'prs',     label: 'Pull Requests' },
-  { id: 'alerts',  label: 'Alerts' },
+  { id: 'phase1', label: 'Phase 1 - Detection' },
+  { id: 'phase2', label: 'Phase 2 - Guardrails' },
+  { id: 'llm', label: 'LLM Report' },
+  { id: 'preview', label: 'Preview' },
+  { id: 'prs', label: 'Pull Requests' },
+  { id: 'alerts', label: 'Alerts' },
 ];
 
 interface PhaseData { ec2Phase1: any[]; s3Phase1: any[]; ec2Phase2: any[]; }
 interface LLMData { ec2Waste: any[]; s3Waste: any[]; }
+interface PreviewData { preview: any | null; }
 
 function Spinner() {
   return (
@@ -29,26 +33,33 @@ function Spinner() {
 }
 
 export default function EngineerInterface() {
-  const [runs,          setRuns]          = useState<any[]>([]);
+  const [runs, setRuns] = useState<any[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
-  const [activeTab,     setActiveTab]     = useState<Tab>('phase1');
-  const [phases,        setPhases]        = useState<PhaseData | null>(null);
-  const [llmData,       setLlmData]       = useState<LLMData | null>(null);
-  const [prs,           setPrs]           = useState<any[]>([]);
-  const [prsError,      setPrsError]      = useState<string | undefined>();
-  const [alerts,        setAlerts]        = useState<any[]>([]);
-  const [alertsError,   setAlertsError]   = useState<string | undefined>();
-  const [runsLoading,   setRunsLoading]   = useState(true);
-  const [phaseLoading,  setPhaseLoading]  = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>('phase1');
+  const [phases, setPhases] = useState<PhaseData | null>(null);
+  const [llmData, setLlmData] = useState<LLMData | null>(null);
+  const [previewData, setPreviewData] = useState<PreviewData | null>(null);
+  const [prs, setPrs] = useState<any[]>([]);
+  const [prsError, setPrsError] = useState<string | undefined>();
+  const [alerts, setAlerts] = useState<any[]>([]);
+  const [alertsError, setAlertsError] = useState<string | undefined>();
+  const [runsLoading, setRunsLoading] = useState(true);
+  const [phaseLoading, setPhaseLoading] = useState(false);
 
-  useEffect(() => {
-    fetch('/api/runs')
+  function loadRuns(selectLatest = false) {
+    return fetch('/api/runs')
       .then(r => r.json())
       .then(data => {
         const arr = Array.isArray(data) ? data : [];
         setRuns(arr);
-        if (arr.length > 0) setSelectedRunId(arr[0].id);
-      })
+        if (arr.length > 0 && (selectLatest || selectedRunId === null)) {
+          setSelectedRunId(arr[0].id);
+        }
+      });
+  }
+
+  useEffect(() => {
+    loadRuns()
       .finally(() => setRunsLoading(false));
 
     fetch('/api/prs')
@@ -73,27 +84,40 @@ export default function EngineerInterface() {
     setPhaseLoading(true);
     setPhases(null);
     setLlmData(null);
+    setPreviewData(null);
     Promise.all([
       fetch(`/api/phases/${selectedRunId}`).then(r => r.json()),
       fetch(`/api/llm/${selectedRunId}`).then(r => r.json()),
+      fetch(`/api/previews/${selectedRunId}`).then(r => r.json()),
     ])
-      .then(([phaseData, llm]) => { setPhases(phaseData); setLlmData(llm); })
+      .then(([phaseData, llm, preview]) => {
+        setPhases(phaseData);
+        setLlmData(llm);
+        setPreviewData(preview);
+      })
       .finally(() => setPhaseLoading(false));
   }, [selectedRunId]);
+
+  function refreshPreview() {
+    if (!selectedRunId) return;
+    fetch(`/api/previews/${selectedRunId}`)
+      .then(r => r.json())
+      .then(data => setPreviewData(data));
+  }
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-white">Engineer Interface</h1>
         <p className="text-gray-400 text-sm mt-1">
-          Pipeline details, guardrail decisions, LLM analysis, infrastructure PRs, and alerts
+          Pipeline details, guardrail decisions, LLM analysis, infrastructure PRs, previews, and alerts
         </p>
       </div>
 
       {runsLoading ? (
         <div className="flex items-center gap-2 text-gray-500 text-sm">
           <div className="animate-spin w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full" />
-          Loading runs…
+          Loading runs...
         </div>
       ) : (
         <RunSelector runs={runs} selectedId={selectedRunId} onChange={id => {
@@ -101,6 +125,8 @@ export default function EngineerInterface() {
           setActiveTab('phase1');
         }} />
       )}
+
+      <AnalyzeControl onRunCreated={() => loadRuns(true)} />
 
       {!runsLoading && !runs.length && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
@@ -111,18 +137,23 @@ export default function EngineerInterface() {
 
       {selectedRunId && (
         <>
-          <div className="flex gap-0 border-b border-gray-800">
+          <div className="flex gap-0 border-b border-gray-800 overflow-x-auto">
             {TABS.map(tab => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                className={`px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap ${
                   activeTab === tab.id
                     ? 'border-purple-500 text-purple-400'
                     : 'border-transparent text-gray-400 hover:text-white'
                 }`}
               >
                 {tab.label}
+                {tab.id === 'preview' && previewData?.preview && (
+                  <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-yellow-900 text-yellow-300 text-xs">
+                    {previewData.preview.modified_files?.length ?? 0}
+                  </span>
+                )}
                 {tab.id === 'prs' && prs.length > 0 && (
                   <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-purple-900 text-purple-300 text-xs">
                     {prs.length}
@@ -144,6 +175,13 @@ export default function EngineerInterface() {
               {activeTab === 'phase1' && phases && <Phase1Panel ec2={phases.ec2Phase1} s3={phases.s3Phase1} />}
               {activeTab === 'phase2' && phases && <Phase2Panel data={phases.ec2Phase2} />}
               {activeTab === 'llm' && llmData && <LLMReportPanel ec2Waste={llmData.ec2Waste} s3Waste={llmData.s3Waste} />}
+              {activeTab === 'preview' && (
+                <PreviewPanel
+                  preview={previewData?.preview ?? null}
+                  ec2Waste={llmData?.ec2Waste ?? []}
+                  onRefresh={refreshPreview}
+                />
+              )}
               {activeTab === 'prs' && <PRListPanel prs={prs} error={prsError} />}
               {activeTab === 'alerts' && <AlertsPanel alerts={alerts} error={alertsError} />}
             </>

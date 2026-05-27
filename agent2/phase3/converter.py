@@ -62,7 +62,8 @@ def build_ec2_scenario(
 
         agent2_action = _enum_value(_coalesce(_read(p2, "phase2_action"), _read(p2, "action")))
         phase1_action = _enum_value(_coalesce(_read(p1, "action"), _read(p2, "phase1_action")))
-        action = agent2_action or phase1_action
+        original_action = agent2_action or phase1_action
+        action = original_action
         if action in ("SKIP", "REVIEW"):
             action = "KEEP"
         elif action == "CLEAN":
@@ -85,6 +86,10 @@ def build_ec2_scenario(
             "waste_type": waste_type,
             "detection_reason": detection_reason,
         }
+        if original_action == "REVIEW":
+            agent2_decision["original_action"] = "REVIEW"
+            agent2_decision["safety_status"] = "NEEDS_REVIEW"
+            agent2_decision["requires_human_approval"] = True
 
         detection_window_days = _coalesce(_read(p1, "detection_window_days"), _read(p2, "detection_window_days"))
         if detection_window_days is not None:
@@ -261,6 +266,9 @@ def build_s3_scenario(
         }
         if original_action == "REVIEW":
             decision["block_reason"] = "Needs manual review"
+            decision["original_action"] = "REVIEW"
+            decision["safety_status"] = "NEEDS_REVIEW"
+            decision["requires_human_approval"] = True
         return decision
 
     if not s3_results:

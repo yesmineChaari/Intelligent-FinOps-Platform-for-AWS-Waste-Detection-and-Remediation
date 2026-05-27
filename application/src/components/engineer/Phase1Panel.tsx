@@ -1,3 +1,5 @@
+import ActionBadge from './ActionBadge';
+
 interface EC2Row {
   id: number;
   resource_name: string | null;
@@ -43,24 +45,6 @@ function fmtBytes(bytes: number | null) {
   return `${bytes} B`;
 }
 
-const ACTION_BADGE: Record<string, string> = {
-  TERMINATE:           'bg-red-900/60 text-red-300 border border-red-800',
-  STOP:                'bg-orange-900/60 text-orange-300 border border-orange-800',
-  DOWNSIZE:            'bg-yellow-900/60 text-yellow-300 border border-yellow-800',
-  REVIEW:              'bg-blue-900/60 text-blue-300 border border-blue-800',
-  SKIP:                'bg-gray-800 text-gray-500',
-  CLEAN:               'bg-purple-900/60 text-purple-300 border border-purple-800',
-  RECOMMEND_LIFECYCLE: 'bg-teal-900/60 text-teal-300 border border-teal-800',
-};
-
-function Badge({ text }: { text: string }) {
-  return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${ACTION_BADGE[text] ?? 'bg-gray-800 text-gray-400'}`}>
-      {text}
-    </span>
-  );
-}
-
 function SectionHeader({ title, count }: { title: string; count: number }) {
   return (
     <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
@@ -101,7 +85,7 @@ export default function Phase1Panel({ ec2, s3 }: { ec2: EC2Row[]; s3: S3Row[] })
                     <td className="px-6 py-4 font-mono text-xs text-white">{row.resource_name ?? '—'}</td>
                     <td className="px-6 py-4 text-gray-400 text-xs">{row.region ?? '—'}</td>
                     <td className="px-6 py-4 text-gray-400 text-xs">{row.role ?? '—'}</td>
-                    <td className="px-6 py-4"><Badge text={row.action} /></td>
+                    <td className="px-6 py-4"><ActionBadge action={row.action} /></td>
                     <td className="px-6 py-4 text-gray-300 text-xs">
                       {row.current_instance_type ? (
                         <>
@@ -155,7 +139,7 @@ export default function Phase1Panel({ ec2, s3 }: { ec2: EC2Row[]; s3: S3Row[] })
                     <td className="px-6 py-4 font-mono text-xs text-white">{row.bucket_name}</td>
                     <td className="px-6 py-4 text-gray-400 text-xs">{row.region ?? '—'}</td>
                     <td className="px-6 py-4 text-gray-400 text-xs">{row.waste_type}</td>
-                    <td className="px-6 py-4"><Badge text={row.action} /></td>
+                    <td className="px-6 py-4"><ActionBadge action={row.action} /></td>
                     <td className="px-6 py-4 text-right text-xs text-gray-300">
                       {row.inv_object_count != null ? row.inv_object_count.toLocaleString() : '—'}
                     </td>

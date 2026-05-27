@@ -92,8 +92,10 @@ def _format_relationships(relationships: list) -> str:
 def _format_agent2_decision(dec: dict) -> str:
     fields = {
         "action":           dec.get("action"),
+        "original_action":  dec.get("original_action"),
         "waste_type":       dec.get("waste_type"),
         "safety_status":    dec.get("safety_status"),
+        "requires_human_approval": dec.get("requires_human_approval"),
         "block_reason":     dec.get("block_reason"),
         "detection_reason": dec.get("detection_reason"),
     }

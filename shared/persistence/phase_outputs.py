@@ -252,6 +252,35 @@ async def _ensure_phase3_tables(conn: asyncpg.Connection) -> None:
             # Minimal test/dev schemas may not have legacy columns such as detection_window.
             continue
 
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS phase3_patch_previews (
+            id BIGSERIAL PRIMARY KEY,
+            run_id BIGINT NOT NULL REFERENCES optimization_runs(id) ON DELETE CASCADE,
+            source_repo_url TEXT,
+            source_ref TEXT,
+            source_subdir TEXT,
+            pr_title TEXT,
+            pr_description TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            modified_files JSONB NOT NULL DEFAULT '[]'::jsonb,
+            warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
+            validation_errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+            approval_note TEXT,
+            approved_by TEXT,
+            rejected_by TEXT,
+            branch_name TEXT,
+            pr_url TEXT,
+            pr_errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            approved_at TIMESTAMPTZ,
+            rejected_at TIMESTAMPTZ
+        )
+        """
+    )
+    await conn.execute("CREATE INDEX IF NOT EXISTS phase3_patch_previews_run_idx ON phase3_patch_previews(run_id)")
+
 
 async def start_optimization_run(
     conn: asyncpg.Connection,
@@ -599,6 +628,7 @@ async def save_phase3_outputs(
     s3_results: list[Any],
 ) -> None:
     await ensure_output_tables(conn)
+    await save_phase3_patch_preview(conn, run_id, phase3_output)
     ec2_by_name, ec2_waste_type_by_name = _phase3_resource_maps(phase2_results, s3_results)
     s3_resource_ids = await _load_s3_resource_ids(
         conn,
@@ -626,6 +656,67 @@ async def save_phase3_outputs(
             )
         elif scenario_type == "s3":
             await _save_phase3_s3_run(conn, run_id, scenario, llm, parsed, s3_resource_ids)
+
+
+async def save_phase3_patch_preview(
+    conn: asyncpg.Connection,
+    run_id: int,
+    phase3_output: dict[str, Any],
+) -> None:
+    """Persist a user-reviewable Terraform preview extracted from Phase 3 output."""
+
+    patch_preview = phase3_output.get("patch_preview") if isinstance(phase3_output, dict) else None
+    patch_plan = phase3_output.get("patch_plan") if isinstance(phase3_output, dict) else None
+    if not isinstance(patch_preview, dict):
+        patch_preview = patch_plan
+    if not isinstance(patch_preview, dict):
+        return
+
+    modified_files = patch_preview.get("modified_files")
+    if not isinstance(modified_files, list) or not modified_files:
+        return
+
+    terraform_source = phase3_output.get("terraform_source")
+    if not isinstance(terraform_source, dict):
+        terraform_source = {}
+
+    validation_errors = patch_preview.get("validation_errors")
+    if not isinstance(validation_errors, list):
+        validation_errors = []
+
+    warnings = patch_preview.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+
+    status = "blocked" if validation_errors else "pending"
+
+    await conn.execute(
+        """
+        INSERT INTO phase3_patch_previews (
+            run_id,
+            source_repo_url,
+            source_ref,
+            source_subdir,
+            pr_title,
+            pr_description,
+            status,
+            modified_files,
+            warnings,
+            validation_errors
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)
+        """,
+        run_id,
+        _single_or_none(terraform_source.get("repo_url")),
+        _single_or_none(terraform_source.get("ref")),
+        _single_or_none(terraform_source.get("subdir")),
+        _single_or_none(patch_preview.get("pr_title")),
+        _single_or_none(patch_preview.get("pr_description")),
+        status,
+        _json(modified_files),
+        _json(warnings),
+        _json(validation_errors),
+    )
 
 
 async def _save_phase3_ec2_run(

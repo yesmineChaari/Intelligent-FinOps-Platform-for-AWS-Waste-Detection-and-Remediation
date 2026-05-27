@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
+import { MOCK_RUN_ID, mockPhases } from '@/lib/mock-run';
 
 export async function GET(_req: Request, { params }: { params: Promise<{ runId: string }> }) {
   const { runId: runIdStr } = await params;
   const runId = parseInt(runIdStr, 10);
   if (isNaN(runId)) return NextResponse.json({ error: 'invalid runId' }, { status: 400 });
+  if (runId === MOCK_RUN_ID) return NextResponse.json(mockPhases);
 
   try {
     const [ec2Phase1, s3Phase1, ec2Phase2] = await Promise.all([

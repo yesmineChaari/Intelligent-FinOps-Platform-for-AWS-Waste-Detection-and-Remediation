@@ -1,5 +1,6 @@
 'use client';
 import { useState } from 'react';
+import ActionBadge from './ActionBadge';
 
 interface WasteRow {
   id: number;
@@ -62,6 +63,10 @@ function TerraformBlock({ code }: { code: string }) {
   );
 }
 
+function verdictLabel(verdict: string) {
+  return verdict === 'APPROVE' ? 'APPROVED' : verdict;
+}
+
 function KVGrid({ data }: { data: Record<string, unknown> }) {
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
@@ -91,10 +96,10 @@ function ResourceCard({ row }: { row: WasteRow }) {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {badgeClass && (
-            <span className={`px-2.5 py-1 rounded text-xs font-bold ${badgeClass}`}>{verdict}</span>
+            <span className={`px-2.5 py-1 rounded text-xs font-bold ${badgeClass}`}>{verdictLabel(verdict)}</span>
           )}
           {row.decision_action && (
-            <span className="px-2 py-1 rounded text-xs bg-gray-800 text-gray-300">{row.decision_action}</span>
+            <ActionBadge action={row.decision_action} className="py-1" />
           )}
         </div>
       </div>
@@ -158,9 +163,12 @@ function S3Card({ row }: { row: S3WasteRow }) {
           <p className="text-white font-mono text-sm">{row.bucket_name}</p>
           <p className="text-gray-500 text-xs mt-0.5">{row.waste_type}</p>
         </div>
-        {badgeClass && (
-          <span className={`px-2.5 py-1 rounded text-xs font-bold shrink-0 ${badgeClass}`}>{verdict}</span>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {badgeClass && (
+            <span className={`px-2.5 py-1 rounded text-xs font-bold ${badgeClass}`}>{verdictLabel(verdict)}</span>
+          )}
+          {row.decision_action && <ActionBadge action={row.decision_action} className="py-1" />}
+        </div>
       </div>
 
       {row.technical_explanation && (
