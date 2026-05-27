@@ -76,9 +76,14 @@ cloudwatch = boto3.client(
 # app2-stopped-recent requires its latest metric to be less than 30 days old.
 # Stopped metrics must therefore be seeded historically, never emitted live.
 #
-# Network/disk units: Bytes/s emitted as a single-datapoint proxy.
-# The collector aggregates over the window; these values feed p95/p99/max
-# calculations in ec2_metrics after collection.
+# EC2 IO metric unit contract:
+# This injector emits raw byte-like CloudWatch values for NetworkIn, NetworkOut,
+# DiskReadBytes, and DiskWriteBytes. ec2_metrics.py normalizes those values
+# before inserting them into the DB: ec2_metrics.network_in and network_out are
+# interpreted by Agent1 as Mbps-like values, while ec2_metrics.disk_read and
+# disk_write are interpreted as MB-like/MBps-like values. This normalization is
+# required so live CloudWatch collection matches the SQL seed and zombie
+# thresholds.
 
 EC2_PROFILES = {
     # P95 CPU < 10 and P95 RAM < 20; active IO prevents zombie detection.
