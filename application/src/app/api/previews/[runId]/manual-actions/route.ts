@@ -101,6 +101,82 @@ function patchInstanceType(content: string, instanceId: string, newType: string)
   return content.slice(0, bounds.start) + patchedBlock + content.slice(bounds.end);
 }
 
+function terraformModuleBlocks(content: string) {
+  const blocks: string[] = [];
+  const pattern = /(^[ \t]*module\s+"[^"]+"\s*\{)/gm;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content)) !== null) {
+    const start = match.index;
+    const open = content.indexOf('{', pattern.lastIndex - 1);
+    if (open < 0) continue;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let lineComment = false;
+    for (let index = open; index < content.length; index += 1) {
+      const char = content[index];
+      const next = content[index + 1] ?? '';
+
+      if (lineComment) {
+        if (char === '\n' || char === '\r') lineComment = false;
+        continue;
+      }
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+
+      if (char === '#') {
+        lineComment = true;
+        continue;
+      }
+      if (char === '/' && next === '/') {
+        lineComment = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === '{') depth += 1;
+      if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          blocks.push(content.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+  }
+  return blocks;
+}
+
+function instanceTypesById(content: string) {
+  const byId = new Map<string, string>();
+  for (const block of terraformModuleBlocks(content)) {
+    const instanceId = block.match(/^[ \t]*instance_id\s*=\s*"([^"]+)"/m)?.[1];
+    const instanceType = block.match(/^[ \t]*instance_type\s*=\s*"([^"]+)"/m)?.[1];
+    if (instanceId && instanceType) byId.set(instanceId, instanceType);
+  }
+  return byId;
+}
+
+function describeInstanceTypeChanges(originalContent: string, newContent: string) {
+  const original = instanceTypesById(originalContent);
+  const next = instanceTypesById(newContent);
+  const changes: string[] = [];
+  for (const [instanceId, nextType] of next) {
+    const originalType = original.get(instanceId);
+    if (originalType && originalType !== nextType) {
+      changes.push(`${instanceId}: ${originalType} -> ${nextType}`);
+    }
+  }
+  return changes.sort();
+}
+
 function asPreviewFiles(value: unknown): PreviewFile[] {
   return Array.isArray(value) ? value as PreviewFile[] : [];
 }
@@ -130,27 +206,22 @@ export async function POST(req: Request, { params }: { params: Promise<{ runId: 
     const preview = getMockPreview();
     const files = asPreviewFiles(preview.modified_files);
     const main = files.find(file => file.file_path === 'main.tf');
-    let nextContent = main?.new_content ?? '';
-    const added = mockLlm.ec2Waste
-      .map(row => {
-        const resource = firstResource(row);
-        const target = targetById.get(row.id);
-        const currentType = resource?.instance_type;
-        const instanceId = resource?.instance_id || row.resource_name;
-        if (!target || !currentType || target === currentType) return null;
-        if (nextContent && instanceId) {
-          nextContent = patchInstanceType(nextContent, String(instanceId), String(target));
-        }
-        return `${instanceId}: ${currentType} -> ${target}`;
-      })
-      .filter((line): line is string => Boolean(line));
+    const originalContent = main?.original_content ?? main?.new_content ?? '';
+    let nextContent = originalContent;
+    for (const row of mockLlm.ec2Waste) {
+      const resource = firstResource(row);
+      const target = targetById.get(row.id);
+      const currentType = resource?.instance_type;
+      const instanceId = resource?.instance_id || row.resource_name;
+      if (!target || !currentType || target === currentType || !instanceId) continue;
+      nextContent = patchInstanceType(nextContent, String(instanceId), String(target));
+    }
+    const added = describeInstanceTypeChanges(originalContent, nextContent);
     const nextPreview = setMockPreview({
       ...preview,
       modified_files: files.map(file => file.file_path === 'main.tf' ? { ...file, new_content: nextContent } : file),
       updated_at: new Date().toISOString(),
-      pr_description: added.length
-        ? `Mock selected EC2 resize changes:\n${added.map(line => `- ${line}`).join('\n')}`
-        : preview.pr_description,
+      pr_description: `User-selected EC2 resize changes:\n${added.map(line => `- ${line}`).join('\n')}`,
     });
     return NextResponse.json({
       preview: nextPreview,
@@ -179,8 +250,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ runId: 
     const main = files.find(file => file.file_path === 'main.tf');
     if (!main) return NextResponse.json({ error: 'Preview does not contain main.tf.' }, { status: 409 });
 
-    let nextContent = main.new_content;
-    const added: string[] = [];
+    const originalContent = main.original_content ?? main.new_content;
+    let nextContent = originalContent;
     const warnings = [...(preview.warnings ?? [])];
 
     for (const row of rows) {
@@ -203,9 +274,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ runId: 
       }
 
       nextContent = patchInstanceType(nextContent, String(instanceId), String(recommendedType));
-      added.push(`${instanceId}: ${currentType} -> ${recommendedType}`);
     }
 
+    const added = describeInstanceTypeChanges(originalContent, nextContent);
     if (!added.length) {
       return NextResponse.json({ error: 'No selected decisions could be converted into Terraform preview changes.', warnings }, { status: 409 });
     }
