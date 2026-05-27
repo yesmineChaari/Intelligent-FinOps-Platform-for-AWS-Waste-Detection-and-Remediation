@@ -226,6 +226,56 @@ module "i_001" {
         self.assertIn('instance_type = "c5.large"', output["patch_preview"]["modified_files"][0]["new_content"])
         self.assertIn('instance_type = "c5.xlarge"', output["patch_preview"]["modified_files"][0]["original_content"])
 
+    @patch("phase3.llm_phase3._import_iac_eval", return_value=_fake_downsize_iac_eval())
+    @patch("phase3.llm_phase3.resolve_terraform_bundle")
+    def test_downsize_without_target_gets_one_size_down_for_llm_validation(self, resolve_bundle, _import_eval) -> None:
+        main_tf = """
+module "i_001" {
+  source        = "./modules/ec2"
+  instance_id   = "i-001"
+  instance_type = "c5.xlarge"
+  role          = "steady"
+}
+"""
+        source = TerraformSource(repo_url="https://github.com/owner/repo.git", ref="main", subdir="")
+        resolve_bundle.return_value = TerraformBundle(
+            source=source,
+            owner="owner",
+            repo="repo",
+            files={"main.tf": main_tf},
+            prompt_bundle=f"### FILE: main.tf\n```hcl\n{main_tf}\n```",
+            total_bytes=len(main_tf),
+            warnings=[],
+        )
+
+        with patch.dict(os.environ, {"PHASE3_EC2_LLM_VALIDATION": "1"}, clear=True):
+            output = run_phase3_llm(
+                [
+                    {
+                        "resource_id": 1,
+                        "resource_name": "i-001",
+                        "action": "STOP",
+                        "current_instance_type": "c5.xlarge",
+                    }
+                ],
+                [
+                    {
+                        "resource_id": 1,
+                        "instance_name": "i-001",
+                        "action": "DOWNSIZE",
+                        "instance_type": "c5.xlarge",
+                    }
+                ],
+                [],
+                model_key="unit-test",
+                terraform_source={"repo_url": source.repo_url},
+            )
+
+        resource = output["runs"][0]["scenario"]["flagged_resources"][0]
+        self.assertEqual(resource["agent2_decision"]["recommended_type"], "c5.large")
+        self.assertEqual(output["runs"][0]["llm"]["parsed"]["decision_summary"]["decided_by"], "AGENT_VALIDATED")
+        self.assertIn('instance_type = "c5.large"', output["patch_preview"]["modified_files"][0]["new_content"])
+
 
 if __name__ == "__main__":
     unittest.main()

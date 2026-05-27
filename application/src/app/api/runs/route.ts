@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
-import { mockRun } from '@/lib/mock-run';
 
 export async function GET() {
   try {
@@ -13,6 +12,7 @@ export async function GET() {
         r.completed_at,
         r.phase3_model_key,
         r.error_message,
+        (SELECT COUNT(*)::int FROM phase3_patch_previews pp WHERE pp.run_id = r.id)        AS preview_count,
         COUNT(DISTINCT p1e.id)::int                                                       AS ec2_count,
         COUNT(DISTINCT p1s.id)::int                                                       AS s3_count,
         COALESCE(SUM(p1e.waste_per_month), 0)::numeric                                    AS ec2_savings,
@@ -25,7 +25,7 @@ export async function GET() {
       ORDER BY r.started_at DESC
       LIMIT 50
     `;
-    return NextResponse.json([mockRun, ...rows]);
+    return NextResponse.json(rows);
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }

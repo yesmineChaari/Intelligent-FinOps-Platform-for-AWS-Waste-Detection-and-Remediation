@@ -24,6 +24,10 @@ interface PhaseData { ec2Phase1: any[]; s3Phase1: any[]; ec2Phase2: any[]; }
 interface LLMData { ec2Waste: any[]; s3Waste: any[]; }
 interface PreviewData { preview: any | null; }
 
+function isSuccessfulRun(run: any) {
+  return ['completed', 'success', 'succeeded'].includes(String(run?.status ?? '').toLowerCase());
+}
+
 function Spinner() {
   return (
     <div className="flex items-center justify-center h-64">
@@ -52,8 +56,10 @@ export default function EngineerInterface() {
       .then(data => {
         const arr = Array.isArray(data) ? data : [];
         setRuns(arr);
-        if (arr.length > 0 && (selectLatest || selectedRunId === null)) {
-          setSelectedRunId(arr[0].id);
+        if (selectLatest || selectedRunId === null) {
+          const successfulRuns = arr.filter(isSuccessfulRun);
+          const successfulRun = successfulRuns.find(run => Number(run.preview_count ?? 0) > 0) ?? successfulRuns[0];
+          setSelectedRunId(successfulRun ? Number(successfulRun.id) : null);
         }
       });
   }
@@ -148,6 +154,13 @@ export default function EngineerInterface() {
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
           <p className="text-gray-400">No optimization runs found</p>
           <p className="text-gray-600 text-xs mt-1">Run the pfa pipeline to generate data</p>
+        </div>
+      )}
+
+      {!runsLoading && runs.length > 0 && !selectedRunId && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
+          <p className="text-gray-400">No successful runs available</p>
+          <p className="text-gray-600 text-xs mt-1">The Preview tab will load after a completed analysis run is available.</p>
         </div>
       )}
 

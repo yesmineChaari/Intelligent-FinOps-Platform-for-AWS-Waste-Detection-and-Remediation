@@ -29,7 +29,6 @@ const STEP_LABEL: Record<string, string> = {
   ingestion: 'Ingestion',
   phase1_phase2: 'Phase 1 + Phase 2',
   phase3_preview: 'Phase 3 + Preview',
-  replay_fixture: 'Replay Mock',
 };
 
 const STATUS_STYLE: Record<string, string> = {
@@ -62,23 +61,6 @@ export default function AnalyzeControl({ onRunCreated }: { onRunCreated: () => v
     try {
       const res = await fetch('/api/analyze', { method: 'POST' });
       setData(await res.json());
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function replay() {
-    setBusy(true);
-    setExpanded(true);
-    try {
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'replay' }),
-      });
-      const next = await res.json();
-      setData(next);
-      if (next?.state?.run_id) onRunCreated();
     } finally {
       setBusy(false);
     }
@@ -120,13 +102,6 @@ export default function AnalyzeControl({ onRunCreated }: { onRunCreated: () => v
             className="px-4 py-2 rounded-lg bg-purple-700 text-white text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-purple-600 transition-colors"
           >
             {disabled ? 'Analysis running...' : 'Analyze'}
-          </button>
-          <button
-            onClick={replay}
-            disabled={disabled}
-            className="px-4 py-2 rounded-lg bg-gray-800 text-gray-100 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-700 transition-colors"
-          >
-            Replay mock
           </button>
           <button
             onClick={() => setExpanded(open => !open)}

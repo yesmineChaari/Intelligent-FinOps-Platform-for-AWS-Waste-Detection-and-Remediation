@@ -19,6 +19,22 @@ from .github_terraform import TerraformSource, resolve_terraform_bundle
 from .local_patch import validate_patch_plan
 from .patch_schema import extract_patch_plan
 
+DEFAULT_INSTANCE_SIZE_ORDER = [
+    "nano",
+    "micro",
+    "small",
+    "medium",
+    "large",
+    "xlarge",
+    "2xlarge",
+    "4xlarge",
+    "8xlarge",
+    "12xlarge",
+    "16xlarge",
+    "24xlarge",
+    "32xlarge",
+]
+
 
 def _iac_eval_repo_path() -> Path:
     """Path to the embedded IaC-Evaluation-Pipeline repo (vendored under llm_benchmarking/)."""
@@ -71,6 +87,54 @@ def _patchable_ec2_phase2(phase2_result: Any) -> bool:
         _phase2_action(phase2_result) == "DOWNSIZE"
         and bool(_read(phase2_result, "instance_type") or _read(phase2_result, "current_instance_type"))
         and bool(_read(phase2_result, "recommended_type"))
+    )
+
+
+class _ResultOverride:
+    def __init__(self, base: Any, overrides: dict[str, Any]) -> None:
+        self._base = base
+        self._overrides = overrides
+
+    def __getattr__(self, field: str) -> Any:
+        if field in self._overrides:
+            return self._overrides[field]
+        return _read(self._base, field)
+
+
+def _one_size_down(instance_type: Any) -> str | None:
+    if not instance_type:
+        return None
+    value = str(instance_type).strip()
+    if "." not in value:
+        return None
+    family, size = value.split(".", 1)
+    if not family or not size:
+        return None
+
+    index = DEFAULT_INSTANCE_SIZE_ORDER.index(size) if size in DEFAULT_INSTANCE_SIZE_ORDER else -1
+    if index <= 0:
+        return None
+    return f"{family}.{DEFAULT_INSTANCE_SIZE_ORDER[index - 1]}"
+
+
+def _phase2_with_downsize_target(phase2_result: Any) -> Any:
+    if _phase2_action(phase2_result) != "DOWNSIZE" or _read(phase2_result, "recommended_type"):
+        return phase2_result
+
+    current_type = (
+        _read(phase2_result, "instance_type")
+        or _read(phase2_result, "current_instance_type")
+    )
+    fallback_type = _one_size_down(current_type)
+    if not fallback_type:
+        return phase2_result
+
+    return _ResultOverride(
+        phase2_result,
+        {
+            "recommended_type": fallback_type,
+            "phase3_recommended_type_source": "fallback_one_size_down",
+        },
     )
 
 
@@ -506,6 +570,7 @@ def run_phase3_llm(
         validate_ec2_with_llm = _env_enabled("PHASE3_EC2_LLM_VALIDATION", "1")
         evaluate_all_ec2 = _env_enabled("PHASE3_EVALUATE_ALL_EC2")
         for phase2_result in ec2_phase2_results:
+            phase2_for_phase3 = _phase2_with_downsize_target(phase2_result)
             key = _resource_key(phase2_result) or "unknown"
             instance_name = (
                 _read(phase2_result, "instance_name")
@@ -516,10 +581,10 @@ def run_phase3_llm(
             scoped_terraform = scoped_terraform_for_instance(tf_file_map, str(instance_name))
             ec2_scenario = _single_ec2_scenario(
                 phase1_by_key,
-                phase2_result,
+                phase2_for_phase3,
                 current_terraform=scoped_terraform or tf_prompt_bundle,
             )
-            is_patchable = _patchable_ec2_phase2(phase2_result)
+            is_patchable = _patchable_ec2_phase2(phase2_for_phase3)
             if is_patchable and validate_ec2_with_llm:
                 system_prompt, user_prompt = _compact_ec2_validation_prompts(ec2_scenario)
                 llm_result = _normalize_compact_ec2_result(
@@ -529,14 +594,14 @@ def run_phase3_llm(
             elif is_patchable:
                 llm_result = _synthetic_ec2_llm_result(
                     ec2_scenario,
-                    phase2_result,
+                    phase2_for_phase3,
                     "Phase 2 produced a DOWNSIZE recommendation with a concrete target type; "
                     "Phase 3 generated a structured instance_type patch without an LLM rewrite.",
                 )
             elif not is_patchable and not evaluate_all_ec2:
                 llm_result = _synthetic_ec2_llm_result(
                     ec2_scenario,
-                    phase2_result,
+                    phase2_for_phase3,
                     "Not auto-applied by Phase 3 because this EC2 finding is not a safe "
                     "instance_type-only DOWNSIZE candidate.",
                     verdict="NOT_EVALUATED",

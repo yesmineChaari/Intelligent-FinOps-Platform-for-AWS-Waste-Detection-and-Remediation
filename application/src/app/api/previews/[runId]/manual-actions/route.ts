@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { getLatestPreview, type PreviewFile } from '@/lib/phase3-preview';
-import { MOCK_RUN_ID, getMockPreview, mockLlm, setMockPreview } from '@/lib/mock-run';
 
 export const runtime = 'nodejs';
 
@@ -202,33 +201,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ runId: 
     : [];
   if (!ids.length) return NextResponse.json({ error: 'No decision ids selected.' }, { status: 400 });
   const targetById = new Map(selections.map(item => [item.wasteId, item.targetType]));
-  if (runId === MOCK_RUN_ID) {
-    const preview = getMockPreview();
-    const files = asPreviewFiles(preview.modified_files);
-    const main = files.find(file => file.file_path === 'main.tf');
-    const originalContent = main?.original_content ?? main?.new_content ?? '';
-    let nextContent = originalContent;
-    for (const row of mockLlm.ec2Waste) {
-      const resource = firstResource(row);
-      const target = targetById.get(row.id);
-      const currentType = resource?.instance_type;
-      const instanceId = resource?.instance_id || row.resource_name;
-      if (!target || !currentType || target === currentType || !instanceId) continue;
-      nextContent = patchInstanceType(nextContent, String(instanceId), String(target));
-    }
-    const added = describeInstanceTypeChanges(originalContent, nextContent);
-    const nextPreview = setMockPreview({
-      ...preview,
-      modified_files: files.map(file => file.file_path === 'main.tf' ? { ...file, new_content: nextContent } : file),
-      updated_at: new Date().toISOString(),
-      pr_description: `User-selected EC2 resize changes:\n${added.map(line => `- ${line}`).join('\n')}`,
-    });
-    return NextResponse.json({
-      preview: nextPreview,
-      added,
-      warnings: nextPreview.warnings,
-    });
-  }
 
   try {
     const preview = await getLatestPreview(runId);

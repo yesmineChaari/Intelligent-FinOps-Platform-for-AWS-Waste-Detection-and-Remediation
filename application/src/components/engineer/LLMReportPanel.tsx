@@ -32,14 +32,14 @@ interface S3WasteRow {
 
 const CARD_BORDER: Record<string, string> = {
   APPROVE: 'border-green-700 bg-green-950/30',
-  BLOCK:   'border-red-700 bg-red-950/30',
-  REVIEW:  'border-yellow-700 bg-yellow-950/30',
+  BLOCK: 'border-red-700 bg-red-950/30',
+  REVIEW: 'border-yellow-700 bg-yellow-950/30',
 };
 
 const VERDICT_BADGE: Record<string, string> = {
   APPROVE: 'bg-green-900 text-green-300 border border-green-700',
-  BLOCK:   'bg-red-900 text-red-300 border border-red-700',
-  REVIEW:  'bg-yellow-900 text-yellow-300 border border-yellow-700',
+  BLOCK: 'bg-red-900 text-red-300 border border-red-700',
+  REVIEW: 'bg-yellow-900 text-yellow-300 border border-yellow-700',
 };
 
 function TerraformBlock({ code }: { code: string }) {
@@ -50,7 +50,7 @@ function TerraformBlock({ code }: { code: string }) {
         onClick={() => setOpen(p => !p)}
         className="flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 transition-colors"
       >
-        <span className="text-[10px]">{open ? '▼' : '▶'}</span>
+        <span className="text-[10px]">{open ? 'v' : '>'}</span>
         {open ? 'Hide' : 'Show'} Terraform patch
       </button>
       {open && (
@@ -65,6 +65,22 @@ function TerraformBlock({ code }: { code: string }) {
 
 function verdictLabel(verdict: string) {
   return verdict === 'APPROVE' ? 'APPROVED' : verdict;
+}
+
+function terraformActionLabel(action: string) {
+  const normalized = action.toUpperCase();
+  if (normalized === 'SCRIPT_HANDLES') return 'Terraform patch will be generated automatically';
+  if (normalized === 'NONE') return 'No Terraform change will be generated for this finding';
+  if (normalized === 'LLM_GENERATED') return 'Terraform change was generated from Phase 3 output';
+  return action;
+}
+
+function decisionSourceLabel(source: string) {
+  const normalized = source.toUpperCase();
+  if (normalized === 'AGENT_VALIDATED') return 'Recommendation checked and confirmed by the LLM';
+  if (normalized === 'AGENT_DETERMINISTIC') return 'Handled by system rules without LLM review';
+  if (normalized === 'LLM_OVERRIDDEN') return 'LLM changed the original recommendation';
+  return source;
 }
 
 function KVGrid({ data }: { data: Record<string, unknown> }) {
@@ -83,9 +99,9 @@ function KVGrid({ data }: { data: Record<string, unknown> }) {
 }
 
 function ResourceCard({ row }: { row: WasteRow }) {
-  const verdict     = row.verdict?.toUpperCase() ?? '';
+  const verdict = row.verdict?.toUpperCase() ?? '';
   const borderClass = CARD_BORDER[verdict] ?? 'border-gray-700 bg-gray-900/50';
-  const badgeClass  = VERDICT_BADGE[verdict];
+  const badgeClass = VERDICT_BADGE[verdict];
 
   return (
     <div className={`border rounded-xl p-5 ${borderClass}`}>
@@ -134,10 +150,18 @@ function ResourceCard({ row }: { row: WasteRow }) {
       </div>
 
       {row.terraform_action && (
-        <p className="mt-3 text-xs text-gray-500">
-          Terraform action: <span className="text-purple-400">{row.terraform_action}</span>
-          {row.decided_by && <span className="ml-2 text-gray-600">· by {row.decided_by}</span>}
-        </p>
+        <div className="mt-3 rounded-lg border border-gray-800 bg-gray-950/40 p-3 text-xs">
+          <p className="text-gray-500">
+            Code outcome:{' '}
+            <span className="text-purple-300">{terraformActionLabel(row.terraform_action)}</span>
+          </p>
+          {row.decided_by && (
+            <p className="mt-1 text-gray-500">
+              Decision source:{' '}
+              <span className="text-gray-300">{decisionSourceLabel(row.decided_by)}</span>
+            </p>
+          )}
+        </div>
       )}
 
       {row.terraform_block && <TerraformBlock code={row.terraform_block} />}
@@ -152,9 +176,9 @@ function ResourceCard({ row }: { row: WasteRow }) {
 }
 
 function S3Card({ row }: { row: S3WasteRow }) {
-  const verdict     = row.verdict?.toUpperCase() ?? '';
+  const verdict = row.verdict?.toUpperCase() ?? '';
   const borderClass = CARD_BORDER[verdict] ?? 'border-gray-700 bg-gray-900/50';
-  const badgeClass  = VERDICT_BADGE[verdict];
+  const badgeClass = VERDICT_BADGE[verdict];
 
   return (
     <div className={`border rounded-xl p-5 ${borderClass}`}>

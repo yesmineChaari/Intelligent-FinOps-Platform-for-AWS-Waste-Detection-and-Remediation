@@ -271,7 +271,7 @@ export default function PreviewPanel({
     return (
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center">
         <p className="text-gray-400">No Terraform preview for this run</p>
-        <p className="text-gray-600 text-xs mt-1">Phase 3 did not return modified Terraform files.</p>
+        <p className="text-gray-600 text-xs mt-1">No successful backend preview is available for the selected run.</p>
       </div>
     );
   }

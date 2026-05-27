@@ -21,12 +21,12 @@ export default function RunSelector({ runs, selectedId, onChange }: Props) {
         className="bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2 text-sm
                    focus:outline-none focus:ring-2 focus:ring-purple-500 min-w-64"
       >
-        <option value="">Select a run…</option>
+        <option value="">Select a run...</option>
         {runs.map(r => (
           <option key={r.id} value={r.id}>
-            Run #{r.id} — {new Date(r.started_at).toLocaleDateString('en-US', {
+            Run #{r.id} - {new Date(r.started_at).toLocaleDateString('en-US', {
               month: 'short', day: 'numeric', year: 'numeric',
-            })} ({r.status}){r.workspace_key ? ` · ${r.workspace_key}` : ''}
+            })} ({r.status}){r.workspace_key ? ` - ${r.workspace_key}` : ''}
           </option>
         ))}
       </select>
