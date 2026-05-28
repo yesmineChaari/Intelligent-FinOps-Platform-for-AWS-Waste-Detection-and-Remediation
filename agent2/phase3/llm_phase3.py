@@ -1,10 +1,84 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
+import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
+
+_FALLBACK_MODEL = "llama3.3-70b"
+
+
+def _filter_tf_bundle_for_ec2(tf_bundle: str, app_group: str) -> str:
+    """Return a trimmed Terraform bundle: only main.tf, only app_group module blocks.
+
+    Reduces prompt token count from ~8k to ~750 tokens for a single app group.
+    """
+    if not tf_bundle:
+        return tf_bundle
+
+    # Extract the main.tf section from the bundle (### FILE: main.tf ... ### FILE: next)
+    main_tf_content = ""
+    main_tf_path = ""
+    file_pattern = re.compile(r"^### FILE: (.+)$", re.MULTILINE)
+    matches = list(file_pattern.finditer(tf_bundle))
+    for i, m in enumerate(matches):
+        fname = m.group(1).strip()
+        if fname.lower() in ("main.tf", "./main.tf"):
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(tf_bundle)
+            main_tf_content = tf_bundle[start:end].strip()
+            main_tf_path = fname
+            break
+
+    if not main_tf_content:
+        # Bundle has no main.tf — return as-is (don't break the flow)
+        return tf_bundle
+
+    # Keep only module blocks whose name starts with the app group prefix
+    prefix = app_group.lower()  # e.g. "app1"
+    module_pattern = re.compile(
+        r'^(module\s+"(' + re.escape(prefix) + r'[^"]*)"[^{]*\{)',
+        re.MULTILINE,
+    )
+
+    kept_blocks: list[str] = []
+    # Also keep the locals block (defines app group tags)
+    locals_match = re.search(r'^locals\s*\{', main_tf_content, re.MULTILINE)
+    if locals_match:
+        depth, i = 0, locals_match.start()
+        while i < len(main_tf_content):
+            ch = main_tf_content[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    kept_blocks.append(main_tf_content[locals_match.start():i + 1])
+                    break
+            i += 1
+
+    for m in module_pattern.finditer(main_tf_content):
+        brace_pos = main_tf_content.index("{", m.start())
+        depth, i = 0, brace_pos
+        while i < len(main_tf_content):
+            ch = main_tf_content[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    kept_blocks.append(main_tf_content[m.start():i + 1])
+                    break
+            i += 1
+
+    filtered_content = "\n\n".join(kept_blocks)
+    return f"### FILE: {main_tf_path}\n{filtered_content}\n"
 
 from .converter import build_ec2_scenario, build_s3_scenario
 from .github_pr import create_pull_request_from_patch_plan
@@ -32,6 +106,29 @@ def _import_iac_eval(repo_path: Path):
     prompt_builder = importlib.import_module("prompts.prompt_builder")
     runners = importlib.import_module("runners")
     return config, prompt_builder, runners
+
+
+def _run_with_fallback(
+    runner: Any,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    fallback_runner: Any,
+    primary_key: str,
+    ContextTooLargeError: type,
+) -> tuple[dict, str]:
+    """Run with primary model; fall back to llama3.3-70b on ContextTooLargeError.
+
+    fallback_runner is shared across all calls so its rate-limit state (_last_call)
+    is preserved and the interval_seconds gap is correctly enforced between fallbacks.
+    """
+    try:
+        return runner.run(system_prompt, user_prompt), primary_key
+    except ContextTooLargeError:
+        if fallback_runner is None or primary_key == _FALLBACK_MODEL:
+            raise
+        log.warning(f"[phase3] Context too large for '{primary_key}' — retrying with '{_FALLBACK_MODEL}'")
+        return fallback_runner.run(system_prompt, user_prompt), _FALLBACK_MODEL
 
 
 def run_phase3_llm(
@@ -122,32 +219,91 @@ def run_phase3_llm(
         "runs": [],
     }
 
-    if ec2_phase2_results:
-        ec2_scenario = build_ec2_scenario(
-            ec2_phase1_results,
-            ec2_phase2_results,
-            current_terraform=tf_prompt_bundle,
-        )
-        system_prompt, user_prompt = prompt_builder.build_prompt(ec2_scenario)
-        llm_result = runner.run(system_prompt, user_prompt)
-        output["runs"].append(
-            {
-                "scenario_type": "ec2",
-                "scenario": ec2_scenario,
-                "llm": llm_result,
-            }
-        )
+    # Build the fallback runner once so its _last_call state is shared across all calls,
+    # ensuring interval_seconds rate limiting is enforced between consecutive fallbacks.
+    _fallback_runner = None
+    if selected_model_key != _FALLBACK_MODEL:
+        fallback_cfg = models.get(_FALLBACK_MODEL)
+        if fallback_cfg:
+            _fallback_runner = runners.get_runner(fallback_cfg, api_keys)
 
-    if s3_phase1_results:
+    _fallback_kwargs = dict(
+        fallback_runner=_fallback_runner,
+        primary_key=selected_model_key,
+        ContextTooLargeError=runners.ContextTooLargeError,
+    )
+
+    if ec2_phase2_results:
+        # Group phase2 results by app group (derived from instance_name prefix, e.g. "app1-*" → "app1")
+        def _app_group(result: Any) -> str:
+            for field in ("instance_name", "resource_name"):
+                name = result.get(field) if isinstance(result, dict) else getattr(result, field, None)
+                if name:
+                    return str(name).split("-")[0]
+            return "default"
+
+        p2_by_group: dict[str, list] = defaultdict(list)
+        for p2 in ec2_phase2_results:
+            p2_by_group[_app_group(p2)].append(p2)
+
+        # Index phase1 results by resource_id for fast lookup
+        p1_by_rid: dict[int, Any] = {}
+        for p1 in ec2_phase1_results:
+            rid = p1.get("resource_id") if isinstance(p1, dict) else getattr(p1, "resource_id", None)
+            if rid is not None:
+                try:
+                    p1_by_rid[int(rid)] = p1
+                except (TypeError, ValueError):
+                    pass
+
+        for app_group, p2_list in sorted(p2_by_group.items()):
+            rids = set()
+            for p2 in p2_list:
+                rid = p2.get("resource_id") if isinstance(p2, dict) else getattr(p2, "resource_id", None)
+                if rid is not None:
+                    try:
+                        rids.add(int(rid))
+                    except (TypeError, ValueError):
+                        pass
+            p1_list = [p1_by_rid[rid] for rid in rids if rid in p1_by_rid]
+
+            ec2_tf = _filter_tf_bundle_for_ec2(tf_prompt_bundle, app_group)
+            ec2_scenario = build_ec2_scenario(
+                p1_list,
+                p2_list,
+                scenario_id=f"A_{app_group}",
+                app_group=app_group.upper(),
+                current_terraform=ec2_tf,
+            )
+            system_prompt, user_prompt = prompt_builder.build_prompt(ec2_scenario)
+            llm_result, model_used = _run_with_fallback(runner, system_prompt, user_prompt, **_fallback_kwargs)
+            output["runs"].append(
+                {
+                    "scenario_type": "ec2",
+                    "app_group": app_group,
+                    "model_used": model_used,
+                    "scenario": ec2_scenario,
+                    "llm": llm_result,
+                }
+            )
+
+    for s3_result in s3_phase1_results:
+        bucket_name = (
+            s3_result.get("bucket_name") if isinstance(s3_result, dict)
+            else getattr(s3_result, "bucket_name", "unknown")
+        )
         s3_scenario = build_s3_scenario(
-            list(s3_phase1_results),
+            [s3_result],
+            scenario_id=f"C_{bucket_name}",
             current_terraform=tf_prompt_bundle,
         )
         system_prompt, user_prompt = prompt_builder.build_prompt(s3_scenario)
-        llm_result = runner.run(system_prompt, user_prompt)
+        llm_result, model_used = _run_with_fallback(runner, system_prompt, user_prompt, **_fallback_kwargs)
         output["runs"].append(
             {
                 "scenario_type": "s3",
+                "bucket_name": bucket_name,
+                "model_used": model_used,
                 "scenario": s3_scenario,
                 "llm": llm_result,
             }

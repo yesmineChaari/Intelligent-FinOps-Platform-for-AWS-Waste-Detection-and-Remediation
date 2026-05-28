@@ -584,7 +584,10 @@ def _phase3_common(parsed: dict[str, Any] | None, llm: dict[str, Any]) -> dict[s
         "pipeline_warning_acknowledged": parsed.get("pipeline_warning_acknowledged"),
         "data_loss_acknowledged": parsed.get("data_loss_acknowledged"),
         "terraform_action": parsed.get("terraform_action"),
-        "terraform_block": parsed.get("terraform_block"),
+        "terraform_block": (
+            tb if isinstance(tb := parsed.get("terraform_block"), str) or tb is None
+            else _json(tb)
+        ),
         "llm_raw_output": llm,
         "parse_error": llm.get("parse_error") if isinstance(llm, dict) else None,
     }

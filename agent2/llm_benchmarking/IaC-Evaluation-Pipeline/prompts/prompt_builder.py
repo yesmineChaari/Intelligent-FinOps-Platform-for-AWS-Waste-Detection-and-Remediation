@@ -48,7 +48,7 @@ MODE1_2_SCHEMA = """{
   "modified_files": [
     {
       "file_path": "path/from/repo/root.tf",
-      "new_content": "full final content of the file after the change"
+      "new_content": "ONLY the changed HCL block(s) — do NOT include the full file"
     }
   ],
   "pr_title": "",
@@ -226,9 +226,9 @@ TERRAFORM RULES — only when terraform_action = LLM_GENERATED:
 
 PR PATCH OUTPUT RULES:
 - If terraform_action = LLM_GENERATED, you MUST populate modified_files.
-- modified_files must contain the FULL FINAL CONTENT of every Terraform file you changed.
-- Do not return partial snippets in modified_files.new_content.
-- Preserve unrelated resources, comments, variables, providers, module calls, and formatting as much as possible.
+- modified_files.new_content must contain ONLY the specific HCL block(s) being changed — NOT the full file.
+- CRITICAL: Do NOT include unchanged resources, modules, variables, providers, outputs, or comments. The system merges your block into the original file automatically.
+- One entry per file. Each entry contains only the blocks that change in that file.
 - file_path must exactly match one of the file paths shown in ### FILE headers in current_terraform.
 - If no Terraform change is needed, modified_files must be [].
 - If terraform_action = NONE or SCRIPT_HANDLES, modified_files must be [].
@@ -290,7 +290,7 @@ MULTI_INSTANCE_SCHEMA = """{
   "modified_files": [
     {
       "file_path": "main.tf",
-      "new_content": "full final file content"
+      "new_content": "ONLY the changed HCL block(s) — do NOT include the full file"
     }
   ],
   "pr_title": "",
@@ -345,7 +345,7 @@ MULTI_FINDING_C_SCHEMA = """{
   "modified_files": [
     {
       "file_path": "modules/s3/main.tf",
-      "new_content": "full final file content"
+      "new_content": "ONLY the changed HCL block(s) — do NOT include the full file"
     }
   ],
   "pr_title": "",
@@ -478,14 +478,16 @@ Remember: if terraform_action is LLM_GENERATED, include a complete valid terrafo
 
 **Agent 2 decision:**
 {json.dumps(f['agent2_decision'], indent=2)}
-
-**Current Terraform:**
-```hcl
-{f['current_terraform']}
-```
 """)
+        current_terraform = scenario.get("current_terraform", "")
+        tf_section = f"""
+**Current Terraform (shared across all findings):**
+```hcl
+{current_terraform}
+```
+""" if current_terraform else ""
         user = f"""## AGENT 2 FINDING — {scenario['scenario_id']} (multi-finding)
-
+{tf_section}
 {chr(10).join(blocks)}
 
 ### Your task

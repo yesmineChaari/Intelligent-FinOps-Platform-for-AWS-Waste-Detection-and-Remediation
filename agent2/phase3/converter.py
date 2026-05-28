@@ -296,7 +296,6 @@ def build_s3_scenario(
                 "resource_id": resource_id,
                 "finding": _finding_for_result(r),
                 "agent2_decision": _decision_for_result(r),
-                "current_terraform": current_terraform,
             }
         )
 

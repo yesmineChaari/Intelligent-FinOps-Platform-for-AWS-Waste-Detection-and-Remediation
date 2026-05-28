@@ -19,6 +19,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+class ContextTooLargeError(Exception):
+    """Raised when the model's context window is too small for this prompt."""
+
+
 class BaseRunner(ABC):
 
     @staticmethod
@@ -227,6 +231,10 @@ class BaseRunner(ABC):
                     "latency_ms":   latency_ms,
                     "attempts":     attempt,
                 }
+
+            except ContextTooLargeError:
+                # Propagate immediately — caller decides whether to retry with a larger model
+                raise
 
             except RuntimeError as exc:
                 # Non-retryable: auth error, invalid request, model not found

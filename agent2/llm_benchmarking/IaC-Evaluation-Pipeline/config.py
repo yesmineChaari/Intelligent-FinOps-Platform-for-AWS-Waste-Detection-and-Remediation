@@ -41,7 +41,8 @@ MODELS = {
         "model_id":          "llama-3.3-70b-versatile",
         "rpm_limit":         30,
         "rpd_limit":         1000,
-        "interval_seconds":  20,   # raised from 10 — 12k TPM limit; Terraform responses are large
+        "interval_seconds":  65,   # 65s > 60s TPM window — guarantees window clears between calls
+        "max_tokens":        2000,
     },
     "gemini-2.5-flash": {
         "provider":          "google",

@@ -3,11 +3,115 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .patch_schema import PatchPlan
+
+
+# ---------------------------------------------------------------------------
+# HCL block-level surgical merge
+# ---------------------------------------------------------------------------
+
+def _find_block_end(text: str, start: int) -> int:
+    """Return the index just after the closing '}' of the HCL block that opens at `start`.
+
+    `start` must point to the opening '{'. Returns -1 if unmatched.
+    """
+    depth = 0
+    i = start
+    in_string = False
+    escape_next = False
+    while i < len(text):
+        ch = text[i]
+        if escape_next:
+            escape_next = False
+        elif ch == "\\" and in_string:
+            escape_next = True
+        elif ch == '"':
+            in_string = not in_string
+        elif not in_string:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+        i += 1
+    return -1
+
+
+def _parse_top_level_blocks(text: str) -> list[tuple[str, int, int]]:
+    """Return list of (block_header, start_of_header, end_of_block) for every top-level HCL block."""
+    results = []
+    # Match any top-level block opener: resource/module/data/variable/output/locals/terraform/provider
+    pattern = re.compile(
+        r'^((?:resource|module|data|variable|output|locals|terraform|provider|moved|check|import)'
+        r'[^\{]*)\{',
+        re.MULTILINE,
+    )
+    for m in pattern.finditer(text):
+        brace_pos = m.end() - 1
+        end = _find_block_end(text, brace_pos)
+        if end == -1:
+            continue
+        results.append((m.group(1).strip(), m.start(), end))
+    return results
+
+
+def _block_key(header: str) -> str:
+    """Normalise a block header to a stable lookup key: 'resource "aws_instance" "web"' → same."""
+    return " ".join(header.split())
+
+
+def merge_hcl_blocks(original: str, patch: str) -> str:
+    """Surgically replace only the blocks present in `patch` inside `original`.
+
+    For each top-level block in `patch`, if a matching block exists in `original`
+    (matched by normalised header key), replace it. If the block is new, append it.
+    Blocks not mentioned in `patch` are left untouched.
+    """
+    if not patch.strip():
+        return original
+
+    patch_blocks = _parse_top_level_blocks(patch)
+    if not patch_blocks:
+        # patch contains no recognisable blocks — fall back to full replacement
+        return patch
+
+    orig_blocks = _parse_top_level_blocks(original)
+    orig_key_map: dict[str, tuple[int, int]] = {
+        _block_key(header): (start, end) for header, start, end in orig_blocks
+    }
+
+    # Apply replacements right-to-left so earlier offsets stay valid
+    result = original
+    replaced_keys: set[str] = set()
+
+    # Collect replacements sorted by start descending
+    replacements: list[tuple[int, int, str]] = []
+    for p_header, p_start, p_end in patch_blocks:
+        key = _block_key(p_header)
+        block_text = patch[p_start:p_end].rstrip()
+        if key in orig_key_map:
+            o_start, o_end = orig_key_map[key]
+            replacements.append((o_start, o_end, block_text))
+            replaced_keys.add(key)
+
+    replacements.sort(key=lambda t: t[0], reverse=True)
+    for o_start, o_end, block_text in replacements:
+        result = result[:o_start] + block_text + result[o_end:]
+
+    # Append genuinely new blocks
+    for p_header, p_start, p_end in patch_blocks:
+        key = _block_key(p_header)
+        if key not in replaced_keys and key not in orig_key_map:
+            block_text = patch[p_start:p_end].rstrip()
+            result = result.rstrip("\r\n") + "\n\n" + block_text + "\n"
+
+    return result
 
 
 DEFAULT_PATCH_MAX_FILES = 10
@@ -156,7 +260,12 @@ def apply_patch_plan_to_directory(
     for normalized_path, target, new_content in targets:
         if allow_new:
             target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(new_content.rstrip("\r\n") + "\n", encoding="utf-8")
+        if target.exists():
+            original_content = target.read_text(encoding="utf-8")
+            merged = merge_hcl_blocks(original_content, new_content)
+        else:
+            merged = new_content
+        target.write_text(merged.rstrip("\r\n") + "\n", encoding="utf-8")
         changed_files.append(normalized_path)
     return changed_files
 

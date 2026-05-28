@@ -14,8 +14,9 @@ Rate limits from config (free tier):
 """
 
 import logging
+import time
 import requests
-from .base_runner import BaseRunner
+from .base_runner import BaseRunner, ContextTooLargeError
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +49,25 @@ class GroqRunner(BaseRunner):
 
         resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=120)
 
-        # 429 = rate limit hit — retryable (base_runner will retry)
+        # 413 = context too large — not retryable, signal caller to use a larger model
+        if resp.status_code == 413:
+            raise ContextTooLargeError(f"Groq 413: {resp.text[:300]}")
+
+        # 429 = rate limit — sleep for the reset window then let base_runner retry
         if resp.status_code == 429:
+            retry_after = resp.headers.get("retry-after") or resp.headers.get("x-ratelimit-reset-requests")
+            try:
+                wait = max(1, int(float(retry_after))) if retry_after else 62
+            except (TypeError, ValueError):
+                wait = 62
+            msg = f"[{self.model_cfg['model_id']}] 429 — retry-after={wait}s | body: {resp.text[:400]}"
+            logger.info(msg)
+            print(msg, flush=True)
+            if wait > 120:
+                raise RuntimeError(
+                    f"Groq 429 retry-after={wait}s exceeds 2 minutes — aborting. Body: {resp.text[:300]}"
+                )
+            time.sleep(wait)
             raise ConnectionError(f"Groq 429 rate limit: {resp.text[:200]}")
 
         # 401/403 = bad API key — non-retryable

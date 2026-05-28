@@ -102,8 +102,11 @@ async def main() -> int:
         conn = await connect_database(database_url)
         await update_optimization_run_status(conn, run_id, "running_phase3")
         ec2_phase1_results = await load_phase1_ec2_outputs(conn, run_id)
-        s3_phase1_results = await load_phase1_s3_outputs(conn, run_id)
         ec2_phase2_results = await load_phase2_ec2_outputs(conn, run_id)
+        evaluate_s3 = env_str("PHASE3_EVALUATE_S3", "1").strip().lower() not in {"0", "false", "no"}
+        s3_phase1_results = await load_phase1_s3_outputs(conn, run_id) if evaluate_s3 else []
+        if not evaluate_s3:
+            log.info("S3 evaluation disabled (PHASE3_EVALUATE_S3=0)")
 
         phase3_output = await asyncio.to_thread(
             run_phase3_llm,
@@ -113,6 +116,11 @@ async def main() -> int:
             model_key=model_key,
             terraform_source=_build_terraform_source(event_payload),
         )
+
+        # LLM calls can take several minutes — reconnect in case the DB connection timed out
+        await _close_if_supported(conn)
+        conn = await connect_database(database_url)
+
         await save_phase3_outputs(
             conn,
             run_id,
@@ -121,12 +129,15 @@ async def main() -> int:
             s3_results=s3_phase1_results,
         )
         await complete_optimization_run(conn, run_id, status="completed")
-        await publish_event(
-            redis_client,
-            OPTIMIZATION_STREAM,
-            EVENT_PHASE3_COMPLETE,
-            {"run_id": run_id, "status": "completed"},
-        )
+        try:
+            await publish_event(
+                redis_client,
+                OPTIMIZATION_STREAM,
+                EVENT_PHASE3_COMPLETE,
+                {"run_id": run_id, "status": "completed"},
+            )
+        except Exception:
+            log.warning("Redis unavailable — phase3_complete event not published (run still completed)")
         return run_id
     except Exception:
         if conn is not None and run_id is not None:
