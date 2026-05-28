@@ -51,7 +51,6 @@ Redis carries event metadata only. Inventory, deterministic outputs, and Phase
 `-- test_*.py                    # Ad hoc Phase 3 verification scripts
 ```
 
-New code should prefer imports from `agent1.*`, `agent2.*`, and `shared.*`.
 Root `phase1`, `phase2`, `phase3`, `llm_benchmarking`, and `persistence`
 imports remain for legacy compatibility.
 
@@ -85,7 +84,7 @@ docker compose run --rm -e AGENT2_RUN_ID=123 agent2
 
 ## Dashboard
 
-The dashboard is a read-only Next.js app in `application/`. It has two main
+The dashboard is a Next.js app in `application/`. It has two main
 views:
 
 | Route | View | Purpose |
@@ -93,17 +92,13 @@ views:
 | `/` | Business dashboard | Savings totals, waste breakdown, trend chart, and recent runs |
 | `/engineer` | Engineer interface | Run selection, Phase 1/2 outputs, LLM report, alerts, and Terraform PRs |
 
-Create `application/.env.local` locally. Do not commit it.
+Create `application/.env` .
 
 ```powershell
 NEON_DATABASE_URL="postgresql://...?sslmode=require"
 GITHUB_TOKEN="github_pat_..."
 GITHUB_REPO="owner/terraform-repo"
 ```
-
-`GITHUB_TOKEN` and `GITHUB_REPO` are only needed for the PR list. The API routes
-run server-side, so database and GitHub credentials are not exposed to the
-browser.
 
 Run the dashboard:
 
@@ -165,8 +160,6 @@ Common configuration values:
 | `PHASE3_PR_BRANCH_PREFIX`, `PHASE3_PR_BASE_BRANCH`, `PHASE3_PR_DRAFT` | Agent2 | Optional PR branch/base/draft controls |
 | `PHASE3_PATCH_MAX_FILES`, `PHASE3_ALLOW_NEW_TF_FILES`, `PHASE3_RUN_TERRAFORM_VALIDATE` | Agent2 | Optional local/PR patch validation controls |
 
-Never commit `.env`, provider keys, database URLs, Redis credentials, Terraform
-state, or generated secret-bearing output.
 
 ## Event Flow
 
@@ -176,7 +169,7 @@ state, or generated secret-bearing output.
 | `optimization_stream` | `deterministic_complete` | Agent1 | Agent2 | `run_id`, `status`, optional safe metadata |
 | `optimization_stream` | `phase3_complete` / `phase3_failed` | Agent2 | Operators/downstream users | `run_id` when known, status, safe failure text |
 
-Agent0 does not publish database contents or AWS inventory through Redis.
+
 Redis publication failure is logged as a warning and does not undo completed
 ingestion data.
 
