@@ -490,11 +490,19 @@ async def save_phase2_outputs(conn: asyncpg.Connection, run_id: int, phase2_resu
 
 
 def _merge_raw_output(record: Any) -> dict[str, Any]:
+    import json as _json_mod
     row = dict(record)
     raw = row.get("raw_output")
+    if isinstance(raw, str):
+        try:
+            raw = _json_mod.loads(raw)
+        except (ValueError, TypeError):
+            raw = None
     if isinstance(raw, dict):
         merged = dict(raw)
-        merged.update(row)
+        # DB columns take precedence, but don't overwrite with NULL —
+        # raw_output holds the authoritative value for fields not stored in a column.
+        merged.update({k: v for k, v in row.items() if v is not None})
         return merged
     return row
 
@@ -535,7 +543,37 @@ async def load_phase2_ec2_outputs(conn: asyncpg.Connection, run_id: int) -> list
         """,
         run_id,
     )
-    return [_merge_raw_output(record) for record in records]
+    results = [_merge_raw_output(record) for record in records]
+
+    # Attach relationship edges via name (resource_id in phase outputs may be stale)
+    names = [r["instance_name"] for r in results if r.get("instance_name")]
+    if names:
+        rel_rows = await conn.fetch(
+            """
+            SELECT r_src.name AS source_name, rr.relationship_type, rr.confidence_score,
+                   r_target.name AS target_resource_name, r_target.resource_type AS target_resource_type
+            FROM resource_relationships rr
+            JOIN resources r_src ON rr.resource_id = r_src.id
+            JOIN resources r_target ON rr.related_resource_id = r_target.id
+            WHERE r_src.name = ANY($1::text[])
+            """,
+            names,
+        )
+        rels_by_name: dict[str, list[dict]] = {}
+        for row in rel_rows:
+            rels_by_name.setdefault(row["source_name"], []).append({
+                "relationship_type": row["relationship_type"],
+                "target_resource_name": row["target_resource_name"],
+                "target_resource_type": row["target_resource_type"],
+                "confidence": row["confidence_score"] / 100.0,
+                "derivation_source": "graph",
+            })
+        for r in results:
+            name = r.get("instance_name")
+            if name:
+                r["relationships"] = rels_by_name.get(name, [])
+
+    return results
 
 
 def _phase3_resource_maps(phase2_results: list[Any], s3_results: list[Any]) -> tuple[dict[str, int], dict[str, str]]:

@@ -66,32 +66,47 @@ def _block_key(header: str) -> str:
     return " ".join(header.split())
 
 
+_TERMINATE_COMMENT_RE = re.compile(r"^#\s+([\w-]+)\s+terminated\b", re.MULTILINE)
+
+
+def _extract_terminate_names(patch: str) -> list[str]:
+    """Return instance names from terminate comment lines, e.g. '# app2-stopped-zombie terminated — FinOps'."""
+    return [m.group(1) for m in _TERMINATE_COMMENT_RE.finditer(patch)]
+
+
 def merge_hcl_blocks(original: str, patch: str) -> str:
     """Surgically replace only the blocks present in `patch` inside `original`.
 
     For each top-level block in `patch`, if a matching block exists in `original`
     (matched by normalised header key), replace it. If the block is new, append it.
     Blocks not mentioned in `patch` are left untouched.
+
+    Terminate comments of the form '# <instance-name> terminated ...' cause the
+    corresponding module block to be removed and replaced with the comment line.
     """
     if not patch.strip():
         return original
-
-    patch_blocks = _parse_top_level_blocks(patch)
-    if not patch_blocks:
-        # patch contains no recognisable blocks — fall back to full replacement
-        return patch
 
     orig_blocks = _parse_top_level_blocks(original)
     orig_key_map: dict[str, tuple[int, int]] = {
         _block_key(header): (start, end) for header, start, end in orig_blocks
     }
 
-    # Apply replacements right-to-left so earlier offsets stay valid
     result = original
     replaced_keys: set[str] = set()
-
-    # Collect replacements sorted by start descending
     replacements: list[tuple[int, int, str]] = []
+
+    # Handle terminate directives: replace original module block with a comment line
+    for instance_name in _extract_terminate_names(patch):
+        module_name = instance_name.replace("-", "_")
+        target_key = f'module "{module_name}"'
+        if target_key in orig_key_map:
+            o_start, o_end = orig_key_map[target_key]
+            replacements.append((o_start, o_end, f"# {instance_name} terminated — FinOps"))
+            replaced_keys.add(target_key)
+
+    # Handle regular HCL block replacements
+    patch_blocks = _parse_top_level_blocks(patch)
     for p_header, p_start, p_end in patch_blocks:
         key = _block_key(p_header)
         block_text = patch[p_start:p_end].rstrip()
@@ -99,6 +114,10 @@ def merge_hcl_blocks(original: str, patch: str) -> str:
             o_start, o_end = orig_key_map[key]
             replacements.append((o_start, o_end, block_text))
             replaced_keys.add(key)
+
+    if not replacements and not patch_blocks:
+        # patch contains no recognisable blocks or terminate directives — fall back to full replacement
+        return patch
 
     replacements.sort(key=lambda t: t[0], reverse=True)
     for o_start, o_end, block_text in replacements:

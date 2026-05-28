@@ -234,17 +234,12 @@ def run_phase3_llm(
     )
 
     if ec2_phase2_results:
-        # Group phase2 results by app group (derived from instance_name prefix, e.g. "app1-*" → "app1")
         def _app_group(result: Any) -> str:
             for field in ("instance_name", "resource_name"):
                 name = result.get(field) if isinstance(result, dict) else getattr(result, field, None)
                 if name:
                     return str(name).split("-")[0]
             return "default"
-
-        p2_by_group: dict[str, list] = defaultdict(list)
-        for p2 in ec2_phase2_results:
-            p2_by_group[_app_group(p2)].append(p2)
 
         # Index phase1 results by resource_id for fast lookup
         p1_by_rid: dict[int, Any] = {}
@@ -256,31 +251,40 @@ def run_phase3_llm(
                 except (TypeError, ValueError):
                     pass
 
-        for app_group, p2_list in sorted(p2_by_group.items()):
-            rids = set()
-            for p2 in p2_list:
-                rid = p2.get("resource_id") if isinstance(p2, dict) else getattr(p2, "resource_id", None)
-                if rid is not None:
-                    try:
-                        rids.add(int(rid))
-                    except (TypeError, ValueError):
-                        pass
-            p1_list = [p1_by_rid[rid] for rid in rids if rid in p1_by_rid]
+        # One LLM call per instance
+        for p2 in ec2_phase2_results:
+            rid_raw = p2.get("resource_id") if isinstance(p2, dict) else getattr(p2, "resource_id", None)
+            try:
+                rid = int(rid_raw) if rid_raw is not None else None
+            except (TypeError, ValueError):
+                rid = None
+
+            p1 = p1_by_rid.get(rid) if rid is not None else None
+            p1_list = [p1] if p1 is not None else []
+
+            instance_name = (
+                p2.get("instance_name") if isinstance(p2, dict) else getattr(p2, "instance_name", None)
+            ) or "unknown"
+            app_group = _app_group(p2)
 
             ec2_tf = _filter_tf_bundle_for_ec2(tf_prompt_bundle, app_group)
             ec2_scenario = build_ec2_scenario(
                 p1_list,
-                p2_list,
-                scenario_id=f"A_{app_group}",
+                [p2],
+                scenario_id=f"A_{instance_name}",
                 app_group=app_group.upper(),
                 current_terraform=ec2_tf,
             )
             system_prompt, user_prompt = prompt_builder.build_prompt(ec2_scenario)
             llm_result, model_used = _run_with_fallback(runner, system_prompt, user_prompt, **_fallback_kwargs)
+            import json as _json
+            print(f"\n[phase3] LLM output — EC2 instance={instance_name} model={model_used}", flush=True)
+            print(_json.dumps(llm_result, indent=2, default=str), flush=True)
             output["runs"].append(
                 {
                     "scenario_type": "ec2",
                     "app_group": app_group,
+                    "instance_name": instance_name,
                     "model_used": model_used,
                     "scenario": ec2_scenario,
                     "llm": llm_result,
@@ -299,6 +303,9 @@ def run_phase3_llm(
         )
         system_prompt, user_prompt = prompt_builder.build_prompt(s3_scenario)
         llm_result, model_used = _run_with_fallback(runner, system_prompt, user_prompt, **_fallback_kwargs)
+        import json as _json
+        print(f"\n[phase3] LLM output — S3 bucket={bucket_name} model={model_used}", flush=True)
+        print(_json.dumps(llm_result, indent=2, default=str), flush=True)
         output["runs"].append(
             {
                 "scenario_type": "s3",
@@ -311,6 +318,21 @@ def run_phase3_llm(
 
     if not output["runs"]:
         output["note"] = "No EC2 Phase2 results or S3 findings to evaluate."
+
+    import json as _json
+    import os as _os
+    _out_dir = Path(__file__).resolve().parents[3] / "output"
+    _out_dir.mkdir(exist_ok=True)
+    _raw_path = _out_dir / "phase3_llm_raw.json"
+    _raw_path.write_text(
+        _json.dumps(
+            [{"scenario_type": r["scenario_type"], "label": r.get("instance_name") or r.get("bucket_name"), "model_used": r["model_used"], "llm": r["llm"]} for r in output["runs"]],
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+    print(f"\n[phase3] Raw LLM output saved → {_raw_path}", flush=True)
 
     patch_plan = extract_patch_plan(output)
     output["patch_plan"] = {

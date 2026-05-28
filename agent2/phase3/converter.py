@@ -168,7 +168,7 @@ def build_ec2_scenario(
             "os": _read(p1, "os"),
             "region": _read(p1, "region"),
             "environment": _read(p1, "environment"),
-            "relationships": [],
+            "relationships": _read(p2, "relationships") or [],
             "agent2_decision": agent2_decision,
         }
 
