@@ -34,18 +34,48 @@ def _get_metric(instance_id, metric_name, namespace, stat):
         return None
 
 
-def _collect(cur, resource_id, instance_name):
-    now       = datetime.now(timezone.utc)
-    cpu       = _get_metric(instance_name, "CPUUtilization",   "AWS/EC2", "Average")
-    ram       = _get_metric(instance_name, "mem_used_percent", "CWAgent", "Average")
-    net_in    = _get_metric(instance_name, "NetworkIn",        "AWS/EC2", "Sum")
-    net_out   = _get_metric(instance_name, "NetworkOut",       "AWS/EC2", "Sum")
-    disk_read = _get_metric(instance_name, "DiskReadBytes",    "AWS/EC2", "Sum")
-    disk_write= _get_metric(instance_name, "DiskWriteBytes",   "AWS/EC2", "Sum")
+def _bytes_to_mbps(value):
+    if value is None:
+        return None
+    return round((float(value) * 8) / 1_000_000, 4)
 
-    if all(v is None for v in [cpu, ram, net_in, net_out, disk_read, disk_write]):
+
+def _bytes_to_mb(value):
+    if value is None:
+        return None
+    return round(float(value) / 1_000_000, 4)
+
+
+def _collect(cur, resource_id, instance_name):
+    now             = datetime.now(timezone.utc)
+    cpu             = _get_metric(instance_name, "CPUUtilization",   "AWS/EC2", "Average")
+    ram             = _get_metric(instance_name, "mem_used_percent", "CWAgent", "Average")
+    raw_network_in  = _get_metric(instance_name, "NetworkIn",        "AWS/EC2", "Sum")
+    raw_network_out = _get_metric(instance_name, "NetworkOut",       "AWS/EC2", "Sum")
+    raw_disk_read   = _get_metric(instance_name, "DiskReadBytes",    "AWS/EC2", "Sum")
+    raw_disk_write  = _get_metric(instance_name, "DiskWriteBytes",   "AWS/EC2", "Sum")
+
+    if all(v is None for v in [cpu, ram, raw_network_in, raw_network_out, raw_disk_read, raw_disk_write]):
         logger.debug(f"[ec2_metrics] No metrics for {instance_name} — zombie/stopped")
         return
+
+    network_in = _bytes_to_mbps(raw_network_in)
+    network_out = _bytes_to_mbps(raw_network_out)
+    disk_read = _bytes_to_mb(raw_disk_read)
+    disk_write = _bytes_to_mb(raw_disk_write)
+
+    logger.debug(
+        "[ec2_metrics] %s raw_io=(network_in=%s, network_out=%s, disk_read=%s, disk_write=%s) normalized_io=(network_in=%s, network_out=%s, disk_read=%s, disk_write=%s)",
+        instance_name,
+        raw_network_in,
+        raw_network_out,
+        raw_disk_read,
+        raw_disk_write,
+        network_in,
+        network_out,
+        disk_read,
+        disk_write,
+    )
 
     cur.execute(
         """
@@ -53,7 +83,7 @@ def _collect(cur, resource_id, instance_name):
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (timestamp, resource_id) DO NOTHING
         """,
-        (now, resource_id, cpu, ram, net_in, net_out, disk_read, disk_write)
+        (now, resource_id, cpu, ram, network_in, network_out, disk_read, disk_write)
     )
 
 

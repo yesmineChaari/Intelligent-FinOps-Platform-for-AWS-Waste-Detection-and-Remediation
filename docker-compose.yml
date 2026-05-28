@@ -11,8 +11,10 @@ services:
     environment:
       SERVICES: ec2,s3,dynamodb,cloudwatch
       DEFAULT_REGION: eu-west-1
+      PERSISTENCE: "1"
     volumes:
-      - "/var/run/docker.sock:/var/run/docker.sock"
+      - finops_project_localstack_data:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
 
   agent0:
     build:
@@ -26,6 +28,7 @@ services:
       LOCALSTACK_ENDPOINT: http://localstack:4566
       AWS_REGION: eu-west-1
       REDIS_URL: redis://redis:6379
+      DETERMINISTIC_DEMO_METRICS: "true"
     depends_on:
       - redis
       - localstack
@@ -39,6 +42,7 @@ services:
     env_file:
       - .env
     environment:
+      DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379
       RULES_PATH: /app/rules.yaml
     depends_on:
@@ -52,7 +56,12 @@ services:
     env_file:
       - .env
     environment:
+      DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379
     depends_on:
       - redis
       - agent1
+
+volumes:
+  finops_project_localstack_data:
+    name: finops_project_localstack_data
