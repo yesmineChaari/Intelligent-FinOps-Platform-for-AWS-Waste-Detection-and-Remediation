@@ -117,9 +117,14 @@ Common configuration values:
 | `GROQ_API_KEY`, `GOOGLE_API_KEY`, `MISTRAL_API_KEY` | Agent2 | LLM provider credentials when used |
 | `GITHUB_TOKEN` | Agent2 | Optional for public GitHub reads; required for PR creation and authenticated access |
 | `PHASE3_CREATE_PR` | Agent2 | Set to `1` only to enable PR creation; default is disabled |
+| `PHASE3_PATCH_SOURCE` | Agent2 | Phase 3 patch source mode: `auto`, `static`, or `llm`; defaults to `auto` |
+| `PHASE3_LLM_CODEGEN_SAFE_TOKENS` | Agent2 | Approximate prompt-token limit for trusting LLM-generated Terraform; defaults to `6000` |
 
 Never commit `.env`, provider keys, database URLs, Redis credentials, Terraform
 state, or generated secret-bearing output.
+
+See [docs/phase3_static_patch_fallback.md](docs/phase3_static_patch_fallback.md)
+for the Phase 3 LLM/static patch source safety mode.
 
 ## Event Flow
 

@@ -29,6 +29,9 @@ class _FakeRunner:
 
 
 class _FakeRunners:
+    class ContextTooLargeError(Exception):
+        pass
+
     @staticmethod
     def get_runner(model_cfg, api_keys):
         return _FakeRunner()
@@ -150,7 +153,7 @@ class TestPhase3PRIntegration(unittest.TestCase):
         self.assertFalse(output["pull_request"]["created"])
         self.assertEqual(
             output["pull_request"]["reason"],
-            "No modified files were returned by the LLM.",
+            "No modified files were produced by the selected patch source ('llm').",
         )
 
     @patch("phase3.llm_phase3._import_iac_eval", return_value=_fake_iac_eval())

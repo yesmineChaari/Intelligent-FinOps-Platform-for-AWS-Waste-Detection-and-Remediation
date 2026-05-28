@@ -14,6 +14,30 @@ log = logging.getLogger(__name__)
 _FALLBACK_MODEL = "llama3.3-70b"
 
 
+def _estimate_tokens(text: str) -> int:
+    """Return a cheap token estimate for prompt safety decisions."""
+
+    return max(1, len(text) // 4)
+
+
+def _safe_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _patch_source_mode() -> str:
+    value = os.environ.get("PHASE3_PATCH_SOURCE", "auto").strip().lower()
+    if value in {"auto", "llm", "static"}:
+        return value
+    return "auto"
+
+
 def _filter_tf_bundle_for_ec2(tf_bundle: str, app_group: str) -> str:
     """Return a trimmed Terraform bundle: only main.tf, only app_group module blocks.
 
@@ -83,7 +107,8 @@ def _filter_tf_bundle_for_ec2(tf_bundle: str, app_group: str) -> str:
 from .converter import build_ec2_scenario, build_s3_scenario
 from .github_pr import create_pull_request_from_patch_plan
 from .github_terraform import TerraformSource, resolve_terraform_bundle
-from .patch_schema import extract_patch_plan
+from .patch_schema import PatchPlan, extract_patch_plan
+from .static_patch_generator import build_static_patch_plan
 
 
 def _iac_eval_repo_path() -> Path:
@@ -131,6 +156,61 @@ def _run_with_fallback(
         return fallback_runner.run(system_prompt, user_prompt), _FALLBACK_MODEL
 
 
+def _select_patch_plan(
+    *,
+    output: dict[str, Any],
+    llm_patch_plan: PatchPlan,
+    ec2_phase1_results: list[Any],
+    ec2_phase2_results: list[Any],
+    s3_phase1_results: list[Any],
+    tf_file_map: dict[str, str],
+) -> PatchPlan:
+    code_generation_safety = output.get("code_generation_safety", {})
+    safety_requested_static = bool(
+        code_generation_safety.get("use_static_patch_fallback")
+        if isinstance(code_generation_safety, dict)
+        else False
+    )
+    patch_source_mode = _patch_source_mode()
+
+    if patch_source_mode == "static":
+        use_static_patch = True
+        reason = "PHASE3_PATCH_SOURCE=static forced deterministic static PatchPlan."
+    elif patch_source_mode == "llm":
+        use_static_patch = False
+        reason = "PHASE3_PATCH_SOURCE=llm forced LLM PatchPlan."
+    else:
+        use_static_patch = safety_requested_static
+        reason = (
+            "Safe code-generation envelope exceeded; static PatchPlan selected."
+            if use_static_patch
+            else "Safe code-generation envelope not exceeded; LLM PatchPlan selected."
+        )
+
+    if use_static_patch:
+        patch_plan = build_static_patch_plan(
+            ec2_phase1_results,
+            ec2_phase2_results,
+            s3_phase1_results,
+            tf_file_map,
+        )
+    else:
+        patch_plan = llm_patch_plan
+
+    output["patch_generation"] = {
+        "source": "static" if use_static_patch else "llm",
+        "patch_source_mode": patch_source_mode,
+        "safety_requested_static": safety_requested_static,
+        "llm_generated_code_ignored": use_static_patch,
+        "reason": reason,
+        "llm_modified_files_count": len(llm_patch_plan.modified_files),
+        "selected_modified_files_count": len(patch_plan.modified_files),
+        "selected_warnings": list(patch_plan.warnings),
+        "selected_patch_warnings": list(patch_plan.warnings),
+    }
+    return patch_plan
+
+
 def run_phase3_llm(
     ec2_phase1_results: list[Any],
     ec2_phase2_results: list[Any],
@@ -176,6 +256,10 @@ def run_phase3_llm(
         }
 
     model_cfg = models[selected_model_key]
+    safe_codegen_tokens = _safe_int_env(
+        "PHASE3_LLM_CODEGEN_SAFE_TOKENS",
+        6000,
+    )
     api_keys: dict[str, str] = {
         "groq": os.environ.get("GROQ_API_KEY", ""),
         "google": os.environ.get("GOOGLE_API_KEY", ""),
@@ -276,12 +360,14 @@ def run_phase3_llm(
                 current_terraform=ec2_tf,
             )
             system_prompt, user_prompt = prompt_builder.build_prompt(ec2_scenario)
+            prompt_token_estimate = _estimate_tokens(system_prompt + "\n" + user_prompt)
             llm_result, model_used = _run_with_fallback(runner, system_prompt, user_prompt, **_fallback_kwargs)
             output["runs"].append(
                 {
                     "scenario_type": "ec2",
                     "app_group": app_group,
                     "model_used": model_used,
+                    "prompt_token_estimate": prompt_token_estimate,
                     "scenario": ec2_scenario,
                     "llm": llm_result,
                 }
@@ -298,12 +384,14 @@ def run_phase3_llm(
             current_terraform=tf_prompt_bundle,
         )
         system_prompt, user_prompt = prompt_builder.build_prompt(s3_scenario)
+        prompt_token_estimate = _estimate_tokens(system_prompt + "\n" + user_prompt)
         llm_result, model_used = _run_with_fallback(runner, system_prompt, user_prompt, **_fallback_kwargs)
         output["runs"].append(
             {
                 "scenario_type": "s3",
                 "bucket_name": bucket_name,
                 "model_used": model_used,
+                "prompt_token_estimate": prompt_token_estimate,
                 "scenario": s3_scenario,
                 "llm": llm_result,
             }
@@ -312,7 +400,51 @@ def run_phase3_llm(
     if not output["runs"]:
         output["note"] = "No EC2 Phase2 results or S3 findings to evaluate."
 
-    patch_plan = extract_patch_plan(output)
+    max_prompt_token_estimate = max(
+        (
+            run.get("prompt_token_estimate", 0)
+            for run in output.get("runs", [])
+            if isinstance(run, dict)
+        ),
+        default=0,
+    )
+    context_fallback_was_used = any(
+        run.get("model_used") == _FALLBACK_MODEL
+        and selected_model_key != _FALLBACK_MODEL
+        for run in output.get("runs", [])
+        if isinstance(run, dict)
+    )
+    terraform_context_too_large = any(
+        "PHASE3_TERRAFORM_MAX_BYTES" in str(warning)
+        for warning in tf_warnings
+    )
+    use_static_patch_fallback = (
+        max_prompt_token_estimate > safe_codegen_tokens
+        or context_fallback_was_used
+        or terraform_context_too_large
+    )
+    output["code_generation_safety"] = {
+        "safe_codegen_token_limit": safe_codegen_tokens,
+        "max_prompt_token_estimate": max_prompt_token_estimate,
+        "context_fallback_was_used": context_fallback_was_used,
+        "terraform_context_too_large": terraform_context_too_large,
+        "use_static_patch_fallback": use_static_patch_fallback,
+        "reason": (
+            "Prompt/context exceeded the safe LLM code-generation envelope."
+            if use_static_patch_fallback
+            else "Prompt/context stayed within the safe LLM code-generation envelope."
+        ),
+    }
+
+    llm_patch_plan = extract_patch_plan(output)
+    patch_plan = _select_patch_plan(
+        output=output,
+        llm_patch_plan=llm_patch_plan,
+        ec2_phase1_results=ec2_phase1_results,
+        ec2_phase2_results=ec2_phase2_results,
+        s3_phase1_results=s3_phase1_results,
+        tf_file_map=tf_file_map,
+    )
     output["patch_plan"] = {
         "modified_files": [
             {
@@ -331,10 +463,14 @@ def run_phase3_llm(
         "true",
         "yes",
     }
+    selected_patch_source = output.get("patch_generation", {}).get("source", "unknown")
     if not patch_plan.modified_files:
         output["pull_request"] = {
             "created": False,
-            "reason": "No modified files were returned by the LLM.",
+            "reason": (
+                f"No modified files were produced by the selected patch source "
+                f"('{selected_patch_source}')."
+            ),
         }
     elif not create_pr or not repo_url:
         output["pull_request"] = {

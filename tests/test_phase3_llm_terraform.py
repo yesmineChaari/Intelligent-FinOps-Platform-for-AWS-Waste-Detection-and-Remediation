@@ -30,6 +30,9 @@ class _FakeRunner:
 
 
 class _FakeRunners:
+    class ContextTooLargeError(Exception):
+        pass
+
     @staticmethod
     def get_runner(model_cfg, api_keys):
         return _FakeRunner()
@@ -80,6 +83,12 @@ class TestPhase3LLMTerraformContext(unittest.TestCase):
         self.assertEqual(output["terraform_source"]["file_count"], 0)
         self.assertEqual(output["terraform_source"]["warnings"], [])
         self.assertEqual(output["runs"][0]["scenario"]["current_terraform"], "")
+        self.assertGreater(output["runs"][0]["prompt_token_estimate"], 0)
+        self.assertEqual(
+            output["code_generation_safety"]["max_prompt_token_estimate"],
+            output["runs"][0]["prompt_token_estimate"],
+        )
+        self.assertFalse(output["code_generation_safety"]["use_static_patch_fallback"])
 
     @patch("phase3.llm_phase3._import_iac_eval", return_value=_fake_iac_eval())
     @patch("phase3.llm_phase3.resolve_terraform_bundle")
@@ -120,6 +129,9 @@ class TestPhase3LLMTerraformContext(unittest.TestCase):
         self.assertEqual(output["terraform_source"]["files"], ["terraform/prod/main.tf"])
         self.assertEqual(output["terraform_source"]["warnings"], ["partial source warning"])
         self.assertNotIn("prompt_bundle", output["terraform_source"])
+        self.assertTrue(all("prompt_token_estimate" in run for run in output["runs"]))
+        self.assertEqual(output["code_generation_safety"]["safe_codegen_token_limit"], 6000)
+        self.assertFalse(output["code_generation_safety"]["context_fallback_was_used"])
 
     @patch("phase3.llm_phase3._import_iac_eval", return_value=_fake_iac_eval())
     @patch("phase3.llm_phase3.resolve_terraform_bundle", side_effect=RuntimeError("network unavailable"))
@@ -138,6 +150,46 @@ class TestPhase3LLMTerraformContext(unittest.TestCase):
         self.assertEqual(
             output["terraform_source"]["warnings"],
             ["Failed to resolve Terraform bundle: network unavailable"],
+        )
+        self.assertFalse(output["code_generation_safety"]["terraform_context_too_large"])
+
+    @patch("phase3.llm_phase3._import_iac_eval", return_value=_fake_iac_eval())
+    @patch("phase3.llm_phase3.resolve_terraform_bundle")
+    def test_codegen_safety_flags_large_prompt_and_terraform_context_warning(self, resolve_bundle, _import_eval) -> None:
+        source = TerraformSource(
+            repo_url="https://github.com/Nour-Ben-Hadid/finops-infra.git",
+            ref="main",
+            subdir="",
+        )
+        resolve_bundle.return_value = TerraformBundle(
+            source=source,
+            owner="Nour-Ben-Hadid",
+            repo="finops-infra",
+            files={"main.tf": 'resource "aws_instance" "app" {}'},
+            prompt_bundle="### FILE: main.tf\n```hcl\nresource {}\n```",
+            total_bytes=42,
+            warnings=[
+                "Terraform prompt bundle exceeded PHASE3_TERRAFORM_MAX_BYTES=1; remaining files were not included."
+            ],
+        )
+
+        with patch.dict(os.environ, {"PHASE3_LLM_CODEGEN_SAFE_TOKENS": "1"}, clear=True):
+            output = run_phase3_llm(
+                [],
+                [],
+                _s3_inputs(),
+                model_key="unit-test",
+                terraform_source={"repo_url": source.repo_url},
+            )
+
+        safety = output["code_generation_safety"]
+        self.assertEqual(safety["safe_codegen_token_limit"], 1)
+        self.assertGreater(safety["max_prompt_token_estimate"], 1)
+        self.assertTrue(safety["terraform_context_too_large"])
+        self.assertTrue(safety["use_static_patch_fallback"])
+        self.assertEqual(
+            safety["reason"],
+            "Prompt/context exceeded the safe LLM code-generation envelope.",
         )
 
 
