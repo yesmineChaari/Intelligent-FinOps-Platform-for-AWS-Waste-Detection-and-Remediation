@@ -61,16 +61,43 @@ characters.
 
 ### EC2 DOWNSIZE
 
-The static generator can patch EC2 downsizing only when all of these are true:
+The static generator can patch EC2 remediation only when Phase 2 approved
+automatic remediation and exactly one Terraform `aws_instance` or matching
+module block is safely matched.
 
-- Phase 2 approved automatic remediation.
+For `DOWNSIZE`, all of these must also be true:
+
 - The action is `DOWNSIZE`.
 - A recommended instance type exists.
-- Exactly one Terraform `aws_instance` or matching module block is safely
-  matched.
 
 Only the `instance_type` line inside the matched block is changed. The generator
 does not perform global replacement of `instance_type` values.
+
+### EC2 STOP
+
+For `STOP`, the generator appends an `aws_ec2_instance_state` block with
+`state = "stopped"` for the matched instance. For direct `aws_instance`
+resources, it references `aws_instance.<name>.id`. If a matched module cannot be
+safely referenced, the generator only proceeds when a literal `instance_id` is
+available in the Phase 1/2 output.
+
+For the repository's EC2 module pattern, the generator patches the matched
+`./modules/ec2` call by setting `desired_state = "stopped"` instead of appending
+another state resource.
+
+The generator skips STOP when an existing `aws_ec2_instance_state` block already
+manages the same instance id expression.
+
+### EC2 TERMINATE
+
+For `TERMINATE`, the generator sets the matched direct `aws_instance` resource or
+matched `./modules/ec2` call to `count = 0`, inserting the count line when no
+count exists or replacing an existing count assignment. This allows Terraform to
+destroy the instance while keeping a small audit marker in code.
+
+The generator skips TERMINATE for non-EC2 module blocks, resources that use
+`for_each`, resources with multiple count assignments, and resources with
+`lifecycle.prevent_destroy = true`.
 
 ### S3 Lifecycle Transition
 
@@ -94,13 +121,20 @@ single safe `bucket_prefix` match. It appends an
 matched bucket. It skips the bucket if a lifecycle configuration already exists
 for that bucket.
 
+The generator also supports the repository's S3 module pattern. If it cannot
+match a direct bucket resource, it looks for exactly one module sourced from
+`./modules/s3` or another path ending in `/s3` whose literal `instance_id`,
+`bucket_name`, `bucket`, `name`, or `bucket_prefix` matches the finding bucket.
+For these module calls, it patches `enable_lifecycle = false` to
+`enable_lifecycle = true`, or inserts `enable_lifecycle = true` when the input is
+missing. It skips the module when lifecycle is already enabled or the value is
+dynamic.
+
 ## Unsupported Or Risky Actions
 
 The static generator currently does not:
 
 - Delete resources.
-- Terminate EC2 instances.
-- Stop EC2 instances.
 - Modify IAM policies.
 - Modify bucket names.
 - Patch ambiguous resources.

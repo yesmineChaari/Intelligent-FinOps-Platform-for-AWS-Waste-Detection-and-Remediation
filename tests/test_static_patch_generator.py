@@ -223,6 +223,166 @@ module "api_server_02" {
         self.assertEqual(patched.count('instance_type = "m5.medium"'), 1)
         self.assertTrue(any("already m5.large" in warning for warning in plan.warnings))
 
+    def test_creates_stop_state_resource_for_approved_ec2_stop(self) -> None:
+        terraform = '''
+resource "aws_instance" "idle_worker" {
+  ami           = "ami-123"
+  instance_type = "t3.medium"
+
+  tags = {
+    Name = "idle-worker"
+  }
+}
+'''.lstrip()
+
+        plan = build_static_patch_plan(
+            ec2_phase1_results=[{"resource_id": 30, "resource_name": "idle-worker"}],
+            ec2_phase2_results=[
+                {
+                    "resource_id": 30,
+                    "instance_name": "idle-worker",
+                    "action": "STOP",
+                }
+            ],
+            s3_phase1_results=[],
+            tf_file_map={"main.tf": terraform},
+        )
+
+        self.assertEqual(len(plan.modified_files), 1)
+        patched = plan.modified_files[0].new_content
+        self.assertIn('resource "aws_instance" "idle_worker"', patched)
+        self.assertIn('resource "aws_ec2_instance_state" "finops_stop_idle_worker"', patched)
+        self.assertIn("instance_id = aws_instance.idle_worker.id", patched)
+        self.assertIn('state       = "stopped"', patched)
+        self.assertEqual(plan.warnings, [])
+
+    def test_sets_desired_state_for_approved_ec2_module_stop(self) -> None:
+        terraform = '''
+module "idle_worker" {
+  source        = "./modules/ec2"
+  instance_id   = "idle-worker"
+  instance_type = "t3.medium"
+  role          = "steady"
+}
+'''.lstrip()
+
+        plan = build_static_patch_plan(
+            ec2_phase1_results=[{"resource_id": 30, "resource_name": "idle-worker"}],
+            ec2_phase2_results=[
+                {
+                    "resource_id": 30,
+                    "instance_name": "idle-worker",
+                    "action": "STOP",
+                }
+            ],
+            s3_phase1_results=[],
+            tf_file_map={"main.tf": terraform},
+        )
+
+        self.assertEqual(len(plan.modified_files), 1)
+        patched = plan.modified_files[0].new_content
+        self.assertIn('module "idle_worker"', patched)
+        self.assertIn('instance_id   = "idle-worker"', patched)
+        self.assertIn('desired_state = "stopped"', patched)
+        self.assertNotIn("aws_ec2_instance_state", patched)
+        self.assertEqual(plan.warnings, [])
+
+    def test_does_not_create_duplicate_stop_state_resource(self) -> None:
+        terraform = '''
+resource "aws_instance" "idle_worker" {
+  ami           = "ami-123"
+  instance_type = "t3.medium"
+
+  tags = {
+    Name = "idle-worker"
+  }
+}
+
+resource "aws_ec2_instance_state" "existing_stop" {
+  instance_id = aws_instance.idle_worker.id
+  state       = "stopped"
+}
+'''.lstrip()
+
+        plan = build_static_patch_plan(
+            ec2_phase1_results=[{"resource_id": 30, "resource_name": "idle-worker"}],
+            ec2_phase2_results=[
+                {
+                    "resource_id": 30,
+                    "instance_name": "idle-worker",
+                    "action": "STOP",
+                }
+            ],
+            s3_phase1_results=[],
+            tf_file_map={"main.tf": terraform},
+        )
+
+        self.assertEqual(plan.modified_files, [])
+        self.assertTrue(any("already manages this instance" in warning for warning in plan.warnings))
+
+    def test_sets_count_zero_for_approved_ec2_terminate(self) -> None:
+        terraform = '''
+resource "aws_instance" "zombie_worker" {
+  ami           = "ami-123"
+  instance_type = "t3.medium"
+
+  tags = {
+    Name = "zombie-worker"
+    count = "business-tag"
+  }
+}
+'''.lstrip()
+
+        plan = build_static_patch_plan(
+            ec2_phase1_results=[{"resource_id": 31, "resource_name": "zombie-worker"}],
+            ec2_phase2_results=[
+                {
+                    "resource_id": 31,
+                    "instance_name": "zombie-worker",
+                    "action": "TERMINATE",
+                }
+            ],
+            s3_phase1_results=[],
+            tf_file_map={"main.tf": terraform},
+        )
+
+        self.assertEqual(len(plan.modified_files), 1)
+        patched = plan.modified_files[0].new_content
+        self.assertIn('resource "aws_instance" "zombie_worker"', patched)
+        self.assertIn("count = 0 # FinOps static TERMINATE", patched)
+        self.assertIn('count = "business-tag"', patched)
+        self.assertIn('instance_type = "t3.medium"', patched)
+        self.assertEqual(plan.warnings, [])
+
+    def test_sets_count_zero_for_approved_ec2_module_terminate(self) -> None:
+        terraform = '''
+module "zombie_worker" {
+  source        = "./modules/ec2"
+  instance_id   = "zombie-worker"
+  instance_type = "t3.medium"
+}
+'''.lstrip()
+
+        plan = build_static_patch_plan(
+            ec2_phase1_results=[{"resource_id": 31, "resource_name": "zombie-worker"}],
+            ec2_phase2_results=[
+                {
+                    "resource_id": 31,
+                    "instance_name": "zombie-worker",
+                    "action": "TERMINATE",
+                }
+            ],
+            s3_phase1_results=[],
+            tf_file_map={"main.tf": terraform},
+        )
+
+        self.assertEqual(len(plan.modified_files), 1)
+        patched = plan.modified_files[0].new_content
+        self.assertIn('module "zombie_worker"', patched)
+        self.assertIn("count = 0 # FinOps static TERMINATE", patched)
+        self.assertIn('instance_id   = "zombie-worker"', patched)
+        self.assertEqual(plan.warnings, [])
+
     def test_generates_s3_lifecycle_block_for_glacier_recommendation(self) -> None:
         terraform = '''
 resource "aws_s3_bucket" "logs" {
@@ -360,6 +520,102 @@ resource "aws_s3_bucket" "logs" {
 
         self.assertEqual(plan.modified_files, [])
         self.assertTrue(any("unsupported S3 storage class" in warning for warning in plan.warnings))
+
+    def test_enables_lifecycle_on_matching_s3_module(self) -> None:
+        terraform = '''
+module "app1_data_bucket" {
+  source           = "./modules/s3"
+  instance_id      = "app1-data-bucket"
+  role             = "managed"
+  bucket_type      = "data"
+  enable_lifecycle = false
+}
+'''.lstrip()
+
+        plan = build_static_patch_plan(
+            ec2_phase1_results=[],
+            ec2_phase2_results=[],
+            s3_phase1_results=[
+                {
+                    "bucket_name": "app1-data-bucket",
+                    "action": "RECOMMEND_LIFECYCLE",
+                }
+            ],
+            tf_file_map={
+                "main.tf": terraform,
+                "modules/s3/main.tf": '''
+resource "aws_s3_bucket" "this" {
+  bucket = var.instance_id
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "this" {
+  count  = var.enable_lifecycle ? 1 : 0
+  bucket = aws_s3_bucket.this.id
+}
+'''.lstrip(),
+            },
+        )
+
+        self.assertEqual(len(plan.modified_files), 1)
+        self.assertEqual(plan.modified_files[0].file_path, "main.tf")
+        patched = plan.modified_files[0].new_content
+        self.assertIn('module "app1_data_bucket"', patched)
+        self.assertIn('instance_id      = "app1-data-bucket"', patched)
+        self.assertIn("enable_lifecycle = true", patched)
+        self.assertNotIn("enable_lifecycle = false", patched)
+        self.assertEqual(plan.warnings, [])
+
+    def test_adds_lifecycle_input_to_matching_s3_module_when_missing(self) -> None:
+        terraform = '''
+module "app1_data_bucket" {
+  source      = "./modules/s3"
+  instance_id = "app1-data-bucket"
+  role        = "managed"
+}
+'''.lstrip()
+
+        plan = build_static_patch_plan(
+            ec2_phase1_results=[],
+            ec2_phase2_results=[],
+            s3_phase1_results=[
+                {
+                    "bucket_name": "app1-data-bucket",
+                    "action": "RECOMMEND_LIFECYCLE",
+                }
+            ],
+            tf_file_map={"main.tf": terraform},
+        )
+
+        self.assertEqual(len(plan.modified_files), 1)
+        patched = plan.modified_files[0].new_content
+        self.assertIn('source      = "./modules/s3"', patched)
+        self.assertIn("enable_lifecycle = true", patched)
+
+    def test_does_not_patch_s3_module_when_lifecycle_already_enabled(self) -> None:
+        terraform = '''
+module "app2_clean_bucket" {
+  source           = "./modules/s3"
+  instance_id      = "app2-clean-bucket"
+  role             = "managed"
+  bucket_type      = "clean"
+  enable_lifecycle = true
+}
+'''.lstrip()
+
+        plan = build_static_patch_plan(
+            ec2_phase1_results=[],
+            ec2_phase2_results=[],
+            s3_phase1_results=[
+                {
+                    "bucket_name": "app2-clean-bucket",
+                    "action": "RECOMMEND_LIFECYCLE",
+                }
+            ],
+            tf_file_map={"main.tf": terraform},
+        )
+
+        self.assertEqual(plan.modified_files, [])
+        self.assertTrue(any("already enabled" in warning for warning in plan.warnings))
 
 
 class TestPhase3PatchSelection(unittest.TestCase):

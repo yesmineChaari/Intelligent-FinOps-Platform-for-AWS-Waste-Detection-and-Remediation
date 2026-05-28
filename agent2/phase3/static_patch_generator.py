@@ -13,7 +13,7 @@ from typing import Any
 from .patch_schema import ModifiedFile, PatchPlan
 
 
-_SUPPORTED_ACTION = "DOWNSIZE"
+_SUPPORTED_EC2_ACTIONS = {"DOWNSIZE", "STOP", "TERMINATE"}
 _BLOCKED_STATUSES = {
     "BLOCKED",
     "DENIED",
@@ -56,9 +56,28 @@ _IDENTITY_FIELDS = (
 _INSTANCE_TYPE_RE = re.compile(
     r'(?m)^([ \t]*instance_type[ \t]*=[ \t]*)"([^"]+)"([^\n\r]*)$'
 )
+_INSTANCE_TYPE_ASSIGNMENT_RE = re.compile(r'^([ \t]*instance_type[ \t]*=[ \t]*)"([^"\r\n]+)"([^\n\r]*)')
 _INSTANCE_TYPE_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_COUNT_ASSIGNMENT_RE = re.compile(r"^([ \t]*count[ \t]*=[ \t]*)([^\n\r#]+)([^\n\r]*)")
+_FOR_EACH_ASSIGNMENT_RE = re.compile(r"^[ \t]*for_each[ \t]*=")
+_ENABLE_LIFECYCLE_ASSIGNMENT_RE = re.compile(
+    r"^([ \t]*enable_lifecycle[ \t]*=[ \t]*)([^\n\r#]+)([^\n\r]*)"
+)
+_DESIRED_STATE_ASSIGNMENT_RE = re.compile(
+    r"^([ \t]*desired_state[ \t]*=[ \t]*)([^\n\r#]+)([^\n\r]*)"
+)
+_SOURCE_ASSIGNMENT_RE = re.compile(r'^([ \t]*source[ \t]*=[ \t]*)"([^"\r\n]+)"([^\n\r]*)')
+_PREVENT_DESTROY_RE = re.compile(
+    r"(?s)\blifecycle\s*\{[^{}]*\bprevent_destroy\s*=\s*true\b[^{}]*\}"
+)
 _BLOCK_HEADER_RE = re.compile(
     r'(?m)^[ \t]*(resource[ \t]+"aws_instance"[ \t]+"([^"]+)"|module[ \t]+"([^"]+)")[ \t]*\{'
+)
+_EC2_INSTANCE_STATE_HEADER_RE = re.compile(
+    r'(?m)^[ \t]*resource[ \t]+"aws_ec2_instance_state"[ \t]+"([^"]+)"[ \t]*\{'
+)
+_EC2_INSTANCE_STATE_INSTANCE_ID_RE = re.compile(
+    r'(?m)^[ \t]*instance_id[ \t]*=[ \t]*([^\n\r#]+)'
 )
 _STRING_LITERAL_RE = re.compile(r'"([^"\r\n]+)"')
 _S3_BUCKET_HEADER_RE = re.compile(
@@ -69,6 +88,9 @@ _S3_LIFECYCLE_HEADER_RE = re.compile(
 )
 _S3_BUCKET_ASSIGNMENT_RE = re.compile(
     r'(?m)^[ \t]*(bucket|bucket_prefix)[ \t]*=[ \t]*"([^"\r\n]+)"[^\n\r]*$'
+)
+_S3_MODULE_BUCKET_ASSIGNMENT_RE = re.compile(
+    r'(?m)^[ \t]*(instance_id|bucket_name|bucket|name|bucket_prefix)[ \t]*=[ \t]*"([^"\r\n]+)"[^\n\r]*$'
 )
 _S3_BUCKET_FIELDS = (
     "bucket_name",
@@ -129,6 +151,13 @@ class _S3BucketMatch:
     assignment_value: str
 
 
+@dataclass(frozen=True)
+class _S3ModuleMatch:
+    block: _TerraformBlock
+    assignment_name: str
+    assignment_value: str
+
+
 def _read(obj: Any, field: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(field, default)
@@ -180,9 +209,10 @@ def _get_action(result: Any) -> str:
     return str(_enum_value(action) or "").strip().upper()
 
 
-def _phase2_allows_patch(result: Any) -> tuple[bool, str | None]:
-    if _get_action(result) != _SUPPORTED_ACTION:
-        return False, "action is not DOWNSIZE"
+def _phase2_allows_ec2_patch(result: Any) -> tuple[bool, str | None]:
+    action = _get_action(result)
+    if action not in _SUPPORTED_EC2_ACTIONS:
+        return False, f"action {action or 'unknown'} is not supported by static EC2 patching"
     if _is_truthy(_read(result, "skip_write")):
         return False, "Phase 2 set skip_write"
     block_reason = _clean_text(_read(result, "block_reason") or _read(result, "guardrail_reason"))
@@ -361,7 +391,9 @@ def _patch_ec2_downsize(
     file_contents: dict[str, str],
 ) -> tuple[ModifiedFile | None, str | None]:
     resource_name = _display_name(phase1_result, phase2_result)
-    allowed, reason = _phase2_allows_patch(phase2_result)
+    if _get_action(phase2_result) != "DOWNSIZE":
+        return None, f"{resource_name}: action is not DOWNSIZE."
+    allowed, reason = _phase2_allows_ec2_patch(phase2_result)
     if not allowed:
         return None, f"{resource_name}: Phase 2 did not approve automatic remediation ({reason})."
 
@@ -384,6 +416,335 @@ def _patch_ec2_downsize(
     original_content = file_contents[block.file_path]
     new_content = original_content[: block.start] + patched_block + original_content[block.end :]
     return ModifiedFile(file_path=block.file_path, new_content=new_content), None
+
+
+def _ec2_instance_state_blocks(file_path: str, content: str) -> list[_TerraformBlock]:
+    return _terraform_blocks_from_header(
+        file_path=file_path,
+        content=content,
+        header_re=_EC2_INSTANCE_STATE_HEADER_RE,
+        kind="aws_ec2_instance_state",
+    )
+
+
+def _terraform_string_expression(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _aws_instance_reference(block: _TerraformBlock) -> str | None:
+    if block.kind != "resource":
+        return None
+    if not _TERRAFORM_REFERENCE_LABEL_RE.match(block.label):
+        return None
+    return f"aws_instance.{block.label}.id"
+
+
+def _module_source(block: _TerraformBlock) -> str | None:
+    if block.kind != "module":
+        return None
+    source_matches = _top_level_assignment_matches(block.text, "source")
+    if len(source_matches) != 1:
+        return None
+    return source_matches[0][2].group(2).replace("\\", "/").strip("/")
+
+
+def _is_module_source(block: _TerraformBlock, module_name: str) -> bool:
+    source = _module_source(block)
+    if source is None:
+        return False
+    normalized_module = module_name.strip("/")
+    return source == normalized_module or source.endswith(f"/{normalized_module}")
+
+
+def _is_ec2_module_block(block: _TerraformBlock) -> bool:
+    return _is_module_source(block, "ec2")
+
+
+def _literal_instance_id(phase1_result: Any | None, phase2_result: Any) -> str | None:
+    for source in (phase2_result, phase1_result):
+        if source is None:
+            continue
+        value = _clean_text(_read(source, "instance_id"))
+        if value:
+            return value
+    return None
+
+
+def _state_instance_id_expressions(block: _TerraformBlock) -> list[str]:
+    return [match.group(1).strip() for match in _EC2_INSTANCE_STATE_INSTANCE_ID_RE.finditer(block.text)]
+
+
+def _has_existing_ec2_stop_state(
+    file_contents: dict[str, str],
+    *,
+    instance_id_expression: str,
+) -> bool:
+    quoted_expression = _terraform_string_expression(instance_id_expression)
+    for file_path, content in file_contents.items():
+        for block in _ec2_instance_state_blocks(file_path, content):
+            expressions = _state_instance_id_expressions(block)
+            if instance_id_expression in expressions or quoted_expression in expressions:
+                return True
+    return False
+
+
+def _append_ec2_stop_state_block(
+    *,
+    content: str,
+    resource_name: str,
+    instance_id_expression: str,
+    literal_instance_id: bool,
+) -> str:
+    state_resource_name = f"finops_stop_{_safe_terraform_name(resource_name)}"
+    instance_id_value = (
+        _terraform_string_expression(instance_id_expression)
+        if literal_instance_id
+        else instance_id_expression
+    )
+    state_block = f'''resource "aws_ec2_instance_state" "{state_resource_name}" {{
+  instance_id = {instance_id_value}
+  state       = "stopped"
+}}
+'''
+    base = content.rstrip()
+    separator = "\n\n" if base else ""
+    return f"{base}{separator}{state_block}"
+
+
+def _set_module_desired_state_stopped(block: _TerraformBlock) -> tuple[str | None, str | None]:
+    if not _is_ec2_module_block(block):
+        return None, "matched module is not sourced from an EC2 module"
+
+    matches = _top_level_assignment_matches(block.text, "desired_state")
+    if len(matches) > 1:
+        return None, "matched EC2 module has multiple desired_state assignments"
+    if matches:
+        start, end, match = matches[0]
+        current_value = match.group(2).strip().strip('"').lower()
+        if current_value == "stopped":
+            return None, "desired_state is already stopped"
+        if current_value != "running":
+            return None, f"desired_state is dynamic ({match.group(2).strip()})"
+        replacement = f'{match.group(1)}"stopped"{match.group(3)}'
+        return block.text[:start] + replacement + block.text[end:], None
+
+    instance_type_matches = _top_level_assignment_matches(block.text, "instance_type")
+    insert_at = instance_type_matches[0][1] if instance_type_matches else None
+    if insert_at is None:
+        source_matches = _top_level_assignment_matches(block.text, "source")
+        insert_at = source_matches[0][1] if source_matches else None
+    if insert_at is not None:
+        return (
+            block.text[:insert_at]
+            + '\n  desired_state = "stopped"'
+            + block.text[insert_at:],
+            None,
+        )
+
+    header_end = block.text.find("{") + 1
+    if header_end <= 0:
+        return None, "matched EC2 module header could not be parsed"
+    insertion = '\n  desired_state = "stopped"'
+    if block.text[header_end : header_end + 1] not in {"\n", "\r"}:
+        insertion += "\n"
+    return block.text[:header_end] + insertion + block.text[header_end:], None
+
+
+def _top_level_assignment_matches(block_text: str, assignment_name: str) -> list[tuple[int, int, re.Match[str]]]:
+    matches: list[tuple[int, int, re.Match[str]]] = []
+    depth = 0
+    in_string = False
+    escape = False
+    offset = 0
+    assignment_patterns = {
+        "count": _COUNT_ASSIGNMENT_RE,
+        "for_each": _FOR_EACH_ASSIGNMENT_RE,
+        "enable_lifecycle": _ENABLE_LIFECYCLE_ASSIGNMENT_RE,
+        "desired_state": _DESIRED_STATE_ASSIGNMENT_RE,
+        "instance_type": _INSTANCE_TYPE_ASSIGNMENT_RE,
+        "source": _SOURCE_ASSIGNMENT_RE,
+    }
+    assignment_re = assignment_patterns[assignment_name]
+
+    for line in block_text.splitlines(keepends=True):
+        if depth == 1:
+            match = assignment_re.match(line)
+            if match:
+                matches.append((offset + match.start(), offset + match.end(), match))
+
+        for char in line:
+            if escape:
+                escape = False
+                continue
+            if in_string:
+                if char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+        offset += len(line)
+    return matches
+
+
+def _patch_ec2_stop(
+    *,
+    phase1_result: Any | None,
+    phase2_result: Any,
+    file_contents: dict[str, str],
+) -> tuple[ModifiedFile | None, str | None]:
+    resource_name = _display_name(phase1_result, phase2_result)
+    if _get_action(phase2_result) != "STOP":
+        return None, f"{resource_name}: action is not STOP."
+    allowed, reason = _phase2_allows_ec2_patch(phase2_result)
+    if not allowed:
+        return None, f"{resource_name}: Phase 2 did not approve automatic remediation ({reason})."
+
+    identities = _identity_values(phase1_result, phase2_result)
+    if not identities:
+        return None, f"{resource_name}: no safe resource identity was available for Terraform matching."
+
+    block, match_warning = _find_matching_terraform_block(file_contents, identities)
+    if block is None:
+        return None, f"{resource_name}: {match_warning}."
+
+    if block.kind == "module":
+        patched_block, patch_warning = _set_module_desired_state_stopped(block)
+        if patched_block is None:
+            return None, f"{resource_name}: {patch_warning}."
+        original_content = file_contents[block.file_path]
+        new_content = original_content[: block.start] + patched_block + original_content[block.end :]
+        return ModifiedFile(file_path=block.file_path, new_content=new_content), None
+
+    instance_id_expression = _aws_instance_reference(block)
+    literal_instance_id = False
+    if instance_id_expression is None:
+        literal_id = _literal_instance_id(phase1_result, phase2_result)
+        if not literal_id:
+            return None, (
+                f"{resource_name}: matched Terraform block cannot be safely referenced "
+                "and no literal instance_id was available."
+            )
+        instance_id_expression = literal_id
+        literal_instance_id = True
+
+    if _has_existing_ec2_stop_state(
+        file_contents,
+        instance_id_expression=instance_id_expression,
+    ):
+        return None, f"{resource_name}: aws_ec2_instance_state already manages this instance."
+
+    original_content = file_contents[block.file_path]
+    new_content = _append_ec2_stop_state_block(
+        content=original_content,
+        resource_name=resource_name,
+        instance_id_expression=instance_id_expression,
+        literal_instance_id=literal_instance_id,
+    )
+    return ModifiedFile(file_path=block.file_path, new_content=new_content), None
+
+
+def _set_count_zero(block: _TerraformBlock) -> tuple[str | None, str | None]:
+    if block.kind == "module":
+        if not _is_ec2_module_block(block):
+            return None, "TERMINATE is only supported for direct aws_instance resources and EC2 modules"
+    elif block.kind != "resource":
+        return None, "TERMINATE is only supported for direct aws_instance resources and EC2 modules"
+    if _top_level_assignment_matches(block.text, "for_each"):
+        return None, "matched Terraform block uses for_each"
+    if _PREVENT_DESTROY_RE.search(block.text):
+        return None, "matched Terraform block has lifecycle.prevent_destroy=true"
+
+    count_matches = _top_level_assignment_matches(block.text, "count")
+    if len(count_matches) > 1:
+        return None, "matched Terraform block has multiple count assignments"
+    if count_matches:
+        start, end, match = count_matches[0]
+        if match.group(2).strip() == "0":
+            return None, "count is already 0"
+        replacement = f"{match.group(1)}0{match.group(3)}"
+        return block.text[:start] + replacement + block.text[end:], None
+
+    if block.kind == "module":
+        source_matches = _top_level_assignment_matches(block.text, "source")
+        if source_matches:
+            insert_at = source_matches[0][1]
+            return block.text[:insert_at] + "\n  count = 0 # FinOps static TERMINATE" + block.text[insert_at:], None
+
+    header_end = block.text.find("{") + 1
+    if header_end <= 0:
+        return None, "matched Terraform block header could not be parsed"
+    insertion = "\n  count = 0 # FinOps static TERMINATE"
+    if block.text[header_end : header_end + 1] not in {"\n", "\r"}:
+        insertion += "\n"
+    return block.text[:header_end] + insertion + block.text[header_end:], None
+
+
+def _patch_ec2_terminate(
+    *,
+    phase1_result: Any | None,
+    phase2_result: Any,
+    file_contents: dict[str, str],
+) -> tuple[ModifiedFile | None, str | None]:
+    resource_name = _display_name(phase1_result, phase2_result)
+    if _get_action(phase2_result) != "TERMINATE":
+        return None, f"{resource_name}: action is not TERMINATE."
+    allowed, reason = _phase2_allows_ec2_patch(phase2_result)
+    if not allowed:
+        return None, f"{resource_name}: Phase 2 did not approve automatic remediation ({reason})."
+
+    identities = _identity_values(phase1_result, phase2_result)
+    if not identities:
+        return None, f"{resource_name}: no safe resource identity was available for Terraform matching."
+
+    block, match_warning = _find_matching_terraform_block(file_contents, identities)
+    if block is None:
+        return None, f"{resource_name}: {match_warning}."
+
+    patched_block, patch_warning = _set_count_zero(block)
+    if patched_block is None:
+        return None, f"{resource_name}: {patch_warning}."
+
+    original_content = file_contents[block.file_path]
+    new_content = original_content[: block.start] + patched_block + original_content[block.end :]
+    return ModifiedFile(file_path=block.file_path, new_content=new_content), None
+
+
+def _patch_ec2_result(
+    *,
+    phase1_result: Any | None,
+    phase2_result: Any,
+    file_contents: dict[str, str],
+) -> tuple[ModifiedFile | None, str | None]:
+    action = _get_action(phase2_result)
+    if action == "DOWNSIZE":
+        return _patch_ec2_downsize(
+            phase1_result=phase1_result,
+            phase2_result=phase2_result,
+            file_contents=file_contents,
+        )
+    if action == "STOP":
+        return _patch_ec2_stop(
+            phase1_result=phase1_result,
+            phase2_result=phase2_result,
+            file_contents=file_contents,
+        )
+    if action == "TERMINATE":
+        return _patch_ec2_terminate(
+            phase1_result=phase1_result,
+            phase2_result=phase2_result,
+            file_contents=file_contents,
+        )
+
+    resource_name = _display_name(phase1_result, phase2_result)
+    return None, f"{resource_name}: action {action or 'unknown'} is not supported by static EC2 patching."
 
 
 def _terraform_blocks_from_header(
@@ -511,7 +872,26 @@ def _s3_bucket_assignments(block: _TerraformBlock) -> list[tuple[str, str]]:
     ]
 
 
+def _s3_module_assignments(block: _TerraformBlock) -> list[tuple[str, str]]:
+    return [
+        (match.group(1), match.group(2).strip())
+        for match in _S3_MODULE_BUCKET_ASSIGNMENT_RE.finditer(block.text)
+        if match.group(2).strip()
+    ]
+
+
+def _is_s3_module_block(block: _TerraformBlock) -> bool:
+    return _is_module_source(block, "s3")
+
+
 def _format_s3_matches(matches: list[_S3BucketMatch]) -> str:
+    return ", ".join(
+        f"{match.block.file_path}:{match.block.label} ({match.assignment_name}={match.assignment_value})"
+        for match in matches
+    )
+
+
+def _format_s3_module_matches(matches: list[_S3ModuleMatch]) -> str:
     return ", ".join(
         f"{match.block.file_path}:{match.block.label} ({match.assignment_name}={match.assignment_value})"
         for match in matches
@@ -547,6 +927,39 @@ def _find_matching_s3_bucket_block(
     if len(prefix_matches) > 1:
         return None, f"ambiguous Terraform S3 bucket_prefix match ({_format_s3_matches(prefix_matches)})"
     return None, "no matching Terraform aws_s3_bucket block found"
+
+
+def _find_matching_s3_module_block(
+    file_contents: dict[str, str],
+    bucket_name: str,
+) -> tuple[_S3ModuleMatch | None, str | None]:
+    exact_matches: list[_S3ModuleMatch] = []
+    prefix_matches: list[_S3ModuleMatch] = []
+
+    for file_path, content in file_contents.items():
+        for block in _terraform_blocks(file_path, content):
+            if not _is_s3_module_block(block):
+                continue
+            for assignment_name, assignment_value in _s3_module_assignments(block):
+                match = _S3ModuleMatch(
+                    block=block,
+                    assignment_name=assignment_name,
+                    assignment_value=assignment_value,
+                )
+                if assignment_name != "bucket_prefix" and assignment_value == bucket_name:
+                    exact_matches.append(match)
+                elif assignment_name == "bucket_prefix" and bucket_name.startswith(assignment_value):
+                    prefix_matches.append(match)
+
+    if len(exact_matches) == 1:
+        return exact_matches[0], None
+    if len(exact_matches) > 1:
+        return None, f"ambiguous Terraform S3 module match ({_format_s3_module_matches(exact_matches)})"
+    if len(prefix_matches) == 1:
+        return prefix_matches[0], None
+    if len(prefix_matches) > 1:
+        return None, f"ambiguous Terraform S3 module bucket_prefix match ({_format_s3_module_matches(prefix_matches)})"
+    return None, "no matching Terraform S3 module block found"
 
 
 def _has_existing_s3_lifecycle(
@@ -602,6 +1015,61 @@ def _append_s3_lifecycle_block(
     return f"{base}{separator}{lifecycle_block}"
 
 
+def _enable_s3_module_lifecycle(block: _TerraformBlock) -> tuple[str | None, str | None]:
+    matches = _top_level_assignment_matches(block.text, "enable_lifecycle")
+    if len(matches) > 1:
+        return None, "matched Terraform S3 module has multiple enable_lifecycle assignments"
+    if matches:
+        start, end, match = matches[0]
+        current_value = match.group(2).strip().lower()
+        if current_value == "true":
+            return None, "lifecycle is already enabled in the matched Terraform S3 module"
+        if current_value != "false":
+            return None, f"enable_lifecycle is dynamic ({match.group(2).strip()})"
+        replacement = f"{match.group(1)}true{match.group(3)}"
+        return block.text[:start] + replacement + block.text[end:], None
+
+    source_matches = _top_level_assignment_matches(block.text, "source")
+    if source_matches:
+        insert_at = source_matches[0][1]
+        return (
+            block.text[:insert_at]
+            + "\n  enable_lifecycle = true"
+            + block.text[insert_at:],
+            None,
+        )
+
+    header_end = block.text.find("{") + 1
+    if header_end <= 0:
+        return None, "matched Terraform S3 module header could not be parsed"
+    insertion = "\n  enable_lifecycle = true"
+    if block.text[header_end : header_end + 1] not in {"\n", "\r"}:
+        insertion += "\n"
+    return block.text[:header_end] + insertion + block.text[header_end:], None
+
+
+def _patch_s3_module_lifecycle(
+    *,
+    bucket_name: str,
+    file_contents: dict[str, str],
+) -> tuple[ModifiedFile | None, str | None]:
+    module_match, match_warning = _find_matching_s3_module_block(file_contents, bucket_name)
+    if module_match is None:
+        return None, f"{bucket_name}: {match_warning}."
+
+    patched_block, patch_warning = _enable_s3_module_lifecycle(module_match.block)
+    if patched_block is None:
+        return None, f"{bucket_name}: {patch_warning}."
+
+    original_content = file_contents[module_match.block.file_path]
+    new_content = (
+        original_content[: module_match.block.start]
+        + patched_block
+        + original_content[module_match.block.end :]
+    )
+    return ModifiedFile(file_path=module_match.block.file_path, new_content=new_content), None
+
+
 def _patch_s3_lifecycle(
     *,
     s3_result: Any,
@@ -622,6 +1090,13 @@ def _patch_s3_lifecycle(
 
     bucket_match, match_warning = _find_matching_s3_bucket_block(file_contents, bucket_name)
     if bucket_match is None:
+        if match_warning == "no matching Terraform aws_s3_bucket block found":
+            module_patch, module_warning = _patch_s3_module_lifecycle(
+                bucket_name=bucket_name,
+                file_contents=file_contents,
+            )
+            if module_patch is not None or module_warning is not None:
+                return module_patch, module_warning
         return None, f"{display_name}: {match_warning}."
     terraform_resource_name = bucket_match.block.label
     if not _TERRAFORM_REFERENCE_LABEL_RE.match(terraform_resource_name):
@@ -654,8 +1129,8 @@ def build_static_patch_plan(
 ) -> PatchPlan:
     """Build deterministic Terraform patches from Phase 1/2 decisions.
 
-    EC2 DOWNSIZE and S3 lifecycle transitions are supported. STOP,
-    TERMINATE, and any ambiguous Terraform mapping are intentionally skipped.
+    EC2 DOWNSIZE, STOP, TERMINATE, and S3 lifecycle transitions are
+    supported. Ambiguous Terraform mapping is intentionally skipped.
     """
 
     warnings: list[str] = []
@@ -666,7 +1141,7 @@ def build_static_patch_plan(
     for phase2_result in ec2_phase2_results:
         resource_id = _get_resource_id(phase2_result)
         phase1_result = phase1_by_resource_id.get(resource_id or "")
-        patch, warning = _patch_ec2_downsize(
+        patch, warning = _patch_ec2_result(
             phase1_result=phase1_result,
             phase2_result=phase2_result,
             file_contents=file_contents,
