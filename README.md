@@ -1,9 +1,10 @@
 # AWS FinOps Agent Pipeline
 
-This project detects AWS cost waste, applies deterministic guardrails, and can
-send resulting recommendations through an LLM/Terraform review stage. The
-preferred deployment is a Redis-coordinated, multi-container pipeline; the
-original single-process entrypoint remains available for local compatibility.
+This project detects AWS cost waste, applies deterministic guardrails, can send
+resulting recommendations through an LLM/Terraform review stage, and exposes the
+run history through a read-only Next.js dashboard. The preferred deployment is a
+Redis-coordinated, multi-container pipeline; the original single-process
+entrypoint remains available for local compatibility.
 
 ## Architecture
 
@@ -22,6 +23,7 @@ Redis carries event metadata only. Inventory, deterministic outputs, and Phase
 | `agent0` | LocalStack/AWS discovery and metric ingestion; publishes `ingestion_complete` | `agent0/app/main.py` |
 | `agent1` | EC2/S3 Phase 1 detection and EC2 Phase 2 guardrails | `python -m agent1.main` |
 | `agent2` | Phase 3 LLM/Terraform evaluation and optional PR flow | `python -m agent2.main` |
+| `application` | Read-only FinOps dashboard for business and engineer views | `npm run dev` from `application/` |
 | `shared` | DB, Redis events, settings, contracts, and persistence | Python package |
 | `main.py` | Legacy one-process Phase 1 -> Phase 2 -> Phase 3 execution | `python main.py` |
 
@@ -38,6 +40,7 @@ Redis carries event metadata only. Inventory, deterministic outputs, and Phase
 |   |-- main.py                  # Phase 3 worker
 |   |-- phase3/                  # Real Phase 3 implementation
 |   `-- llm_benchmarking/        # Embedded IaC evaluation workflow
+|-- application/                 # Next.js dashboard
 |-- shared/                      # Shared infrastructure and persistence APIs
 |-- persistence/                 # Legacy compatibility exports to shared.persistence
 |-- phase1/ phase2/ phase3/     # Legacy compatibility wrappers
@@ -45,7 +48,7 @@ Redis carries event metadata only. Inventory, deterministic outputs, and Phase
 |-- docker-compose.yml           # Full containerized stack
 |-- rules.yaml                   # Detection and guardrail rules
 |-- tests/                       # unittest coverage
-`-- docs/                        # Operations and persistence documentation
+`-- test_*.py                    # Ad hoc Phase 3 verification scripts
 ```
 
 New code should prefer imports from `agent1.*`, `agent2.*`, and `shared.*`.
@@ -79,8 +82,45 @@ docker compose run --rm -e AGENT1_SKIP_WAIT=1 agent1
 docker compose run --rm -e AGENT2_RUN_ID=123 agent2
 ```
 
-See [docs/dockerisation.md](docs/dockerisation.md) for the full smoke-test
-checklist, event payload contract, status lifecycle, and troubleshooting.
+
+## Dashboard
+
+The dashboard is a read-only Next.js app in `application/`. It has two main
+views:
+
+| Route | View | Purpose |
+| --- | --- | --- |
+| `/` | Business dashboard | Savings totals, waste breakdown, trend chart, and recent runs |
+| `/engineer` | Engineer interface | Run selection, Phase 1/2 outputs, LLM report, alerts, and Terraform PRs |
+
+Create `application/.env.local` locally. Do not commit it.
+
+```powershell
+NEON_DATABASE_URL="postgresql://...?sslmode=require"
+GITHUB_TOKEN="github_pat_..."
+GITHUB_REPO="owner/terraform-repo"
+```
+
+`GITHUB_TOKEN` and `GITHUB_REPO` are only needed for the PR list. The API routes
+run server-side, so database and GitHub credentials are not exposed to the
+browser.
+
+Run the dashboard:
+
+```powershell
+cd application
+npm install
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:3001
+```
+
+For endpoint details and table usage, see
+[application/README.md](application/README.md).
 
 ## Legacy Mode
 
@@ -106,7 +146,7 @@ Common configuration values:
 | Variable | Used by | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | Agent0, Agent1, Agent2 | External Postgres/Neon connection; required by Agent0 and Agent1 |
-| `NEON_DATABASE_URL` | Agent2, legacy `main.py` | Alternative/legacy database URL |
+| `NEON_DATABASE_URL` | Agent2, legacy `main.py`, dashboard | Alternative/legacy database URL; dashboard reads it from `application/.env.local` |
 | `REDIS_URL` | Agent0, Agent1, Agent2, legacy `main.py` | Redis Stream connection |
 | `RULES_PATH` | Agent1, legacy `main.py` | Rules file; defaults to `rules.yaml` |
 | `AGENT1_SKIP_WAIT` | Agent1 | Run without waiting for `ingestion_complete` |
@@ -115,8 +155,15 @@ Common configuration values:
 | `PHASE3_TERRAFORM_REPO_URL`, `PHASE3_TERRAFORM_REF`, `PHASE3_TERRAFORM_SUBDIR` | Agent0/Agent1/Agent2 | Terraform source metadata passed through events or environment |
 | `WORKSPACE_KEY`, `TERRAFORM_WORKSPACE_KEY`, `ACCOUNT_ID` | Agent0 | Optional safe metadata for `ingestion_complete` |
 | `GROQ_API_KEY`, `GOOGLE_API_KEY`, `MISTRAL_API_KEY` | Agent2 | LLM provider credentials when used |
-| `GITHUB_TOKEN` | Agent2 | Optional for public GitHub reads; required for PR creation and authenticated access |
+| `GITHUB_TOKEN` | Agent2, dashboard | Optional for public GitHub reads; required for PR creation and authenticated PR listing |
+| `GITHUB_REPO` | Dashboard | GitHub repository slug used by `/api/prs`, for example `owner/terraform-repo` |
 | `PHASE3_CREATE_PR` | Agent2 | Set to `1` only to enable PR creation; default is disabled |
+| `PHASE3_PATCH_SOURCE` | Agent2 | Patch source mode: `auto`, `static`, or `llm`; `static` uses deterministic Terraform patches |
+| `PHASE3_EVALUATE_S3` | Agent2 | Set to `0`, `false`, or `no` to skip S3 Phase 3 evaluation; default is enabled |
+| `PHASE3_LLM_CODEGEN_SAFE_TOKENS` | Agent2 | Prompt-token safety limit for trusting LLM-generated Terraform; default is `6000` |
+| `PHASE3_TERRAFORM_MAX_BYTES` | Agent2 | Maximum Terraform source bundle size fetched from GitHub; default is `500000` |
+| `PHASE3_PR_BRANCH_PREFIX`, `PHASE3_PR_BASE_BRANCH`, `PHASE3_PR_DRAFT` | Agent2 | Optional PR branch/base/draft controls |
+| `PHASE3_PATCH_MAX_FILES`, `PHASE3_ALLOW_NEW_TF_FILES`, `PHASE3_RUN_TERRAFORM_VALIDATE` | Agent2 | Optional local/PR patch validation controls |
 
 Never commit `.env`, provider keys, database URLs, Redis credentials, Terraform
 state, or generated secret-bearing output.
@@ -146,10 +193,8 @@ running_phase1 -> running_phase2 -> waiting_phase3 -> running_phase3 -> complete
 
 Failure outcomes are `failed` for Agent1 failures and `phase3_failed` for
 Agent2 failures. Key tables are `optimization_runs`, `phase1_ec2_outputs`,
-`phase1_s3_outputs`, `phase2_ec2_outputs`, `waste`, and `s3_waste`.
-
-See [docs/output_persistence.md](docs/output_persistence.md) for table roles
-and stored output details.
+`phase1_s3_outputs`, `phase2_ec2_outputs`, `waste`, and `s3_waste`. The output
+tables are created and migrated at runtime by `shared.persistence.phase_outputs`.
 
 ## Development
 
