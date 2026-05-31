@@ -78,7 +78,11 @@ def _upsert_app_group(cur, group_name, resource_id):
 def _upsert_relationships(cur, resource_id, tags):
     managed_relationship_types = list(RELATIONSHIP_TAG_MAP.values())
     cur.execute(
-        "DELETE FROM resource_relationships WHERE resource_id = %s AND relationship_type = ANY(%s)",
+        """
+        DELETE FROM resource_relationships
+        WHERE resource_id = %s
+          AND relationship_type = ANY(%s::relationship_type_enum[])
+        """,
         (resource_id, managed_relationship_types),
     )
 
@@ -113,7 +117,7 @@ def _upsert_relationships(cur, resource_id, tags):
             """
             SELECT resource_id, related_resource_id
             FROM resource_relationships
-            WHERE relationship_type = %s
+            WHERE relationship_type = %s::relationship_type_enum
             LIMIT 1
             """,
             (rel_type,),
