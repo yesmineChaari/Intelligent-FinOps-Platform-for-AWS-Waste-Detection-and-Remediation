@@ -87,7 +87,7 @@ def run_full_pipeline():
         return  # no point running collectors if discovery failed
 
     try:
-        inject_all_metrics(ec2_points=12, dynamo_points=12, s3_days=1)
+        inject_all_metrics()
     except Exception as e:
         logger.error(f"[pipeline] Metric injection failed: {e}")
 
@@ -125,7 +125,9 @@ async def lifespan(app: FastAPI):
         minutes=5,
         id="full_pipeline",
         replace_existing=True,
-        next_run_time=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),  # run immediately on start
+        next_run_time=__import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc
+        ),  # run immediately on start
     )
 
     scheduler.start()
@@ -144,9 +146,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(ec2.router,           prefix="/api/ec2",          tags=["EC2"])
-app.include_router(s3.router,            prefix="/api/s3",           tags=["S3"])
-app.include_router(dynamodb.router,      prefix="/api/dynamodb",     tags=["DynamoDB"])
+app.include_router(ec2.router, prefix="/api/ec2", tags=["EC2"])
+app.include_router(s3.router, prefix="/api/s3", tags=["S3"])
+app.include_router(dynamodb.router, prefix="/api/dynamodb", tags=["DynamoDB"])
 app.include_router(relationships.router, prefix="/api/relationships", tags=["Relationships"])
 
 

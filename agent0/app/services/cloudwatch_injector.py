@@ -5,10 +5,12 @@ from datetime import datetime, timezone
 
 import boto3
 
-logger     = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 LOCALSTACK = os.getenv("LOCALSTACK_ENDPOINT", "http://localhost:4566")
-REGION     = os.getenv("AWS_REGION", "eu-west-1")
-DETERMINISTIC_DEMO_METRICS = os.getenv("DETERMINISTIC_DEMO_METRICS", "true").lower() == "true"
+REGION = os.getenv("AWS_REGION", "eu-west-1")
+DETERMINISTIC_DEMO_METRICS = (
+    os.getenv("DETERMINISTIC_DEMO_METRICS", "true").lower() == "true"
+)
 
 if DETERMINISTIC_DEMO_METRICS:
     random.seed(42)
@@ -360,57 +362,93 @@ def inject_ec2_metrics() -> None:
         dims = [{"Name": "InstanceId", "Value": iid}]
         cpu, ram = _profile_cpu_ram(p)
 
-        net_in  = _uniform(p["net"],        p["net"] * 0.3)
+        net_in = _uniform(p["net"], p["net"] * 0.3)
         net_out = _uniform(p["net"] * 0.55, p["net"] * 0.25)
 
-        _put("AWS/EC2",  "CPUUtilization",   dims, cpu,                                    "Percent")
-        _put("CWAgent",  "mem_used_percent",  dims, ram,                                    "Percent")
-        _put("AWS/EC2",  "NetworkIn",         dims, net_in,                                 "Bytes")
-        _put("AWS/EC2",  "NetworkOut",        dims, net_out,                                "Bytes")
-        _put("AWS/EC2",  "DiskReadBytes",     dims, _uniform(p["disk_r"], p["disk_r"] * 0.5), "Bytes")
-        _put("AWS/EC2",  "DiskWriteBytes",    dims, _uniform(p["disk_w"], p["disk_w"] * 0.5), "Bytes")
+        _put("AWS/EC2", "CPUUtilization", dims, cpu, "Percent")
+        _put("CWAgent", "mem_used_percent", dims, ram, "Percent")
+        _put("AWS/EC2", "NetworkIn", dims, net_in, "Bytes")
+        _put("AWS/EC2", "NetworkOut", dims, net_out, "Bytes")
+        _put(
+            "AWS/EC2",
+            "DiskReadBytes",
+            dims,
+            _uniform(p["disk_r"], p["disk_r"] * 0.5),
+            "Bytes",
+        )
+        _put(
+            "AWS/EC2",
+            "DiskWriteBytes",
+            dims,
+            _uniform(p["disk_w"], p["disk_w"] * 0.5),
+            "Bytes",
+        )
 
     logger.info("[injector] EC2 done")
 
 
 def inject_dynamodb_metrics() -> None:
     for tname, p in DYNAMODB_TABLES.items():
-        dims     = [{"Name": "TableName", "Value": tname}]
+        dims = [{"Name": "TableName", "Value": tname}]
         get_dims = dims + [{"Name": "Operation", "Value": "GetItem"}]
         put_dims = dims + [{"Name": "Operation", "Value": "PutItem"}]
 
         rcu = round(max(0.0, _uniform(p["rcu_base"], p["rcu_var"])), 2)
         wcu = round(max(0.0, _uniform(p["wcu_base"], p["wcu_var"])), 2)
 
-        _put("AWS/DynamoDB", "ConsumedReadCapacityUnits",  dims,     rcu,                                "Count")
-        _put("AWS/DynamoDB", "ConsumedWriteCapacityUnits", dims,     wcu,                                "Count")
-        _put("AWS/DynamoDB", "ThrottledRequests",          dims,     0.0,                                "Count")
-        _put("AWS/DynamoDB", "SuccessfulRequestLatency",   get_dims, round(_uniform(2.75, 1.25), 3),     "Milliseconds")
-        _put("AWS/DynamoDB", "SuccessfulRequestLatency",   put_dims, round(_uniform(3.75, 1.75), 3),     "Milliseconds")
+        _put("AWS/DynamoDB", "ConsumedReadCapacityUnits", dims, rcu, "Count")
+        _put("AWS/DynamoDB", "ConsumedWriteCapacityUnits", dims, wcu, "Count")
+        _put("AWS/DynamoDB", "ThrottledRequests", dims, 0.0, "Count")
+        _put(
+            "AWS/DynamoDB",
+            "SuccessfulRequestLatency",
+            get_dims,
+            round(_uniform(2.75, 1.25), 3),
+            "Milliseconds",
+        )
+        _put(
+            "AWS/DynamoDB",
+            "SuccessfulRequestLatency",
+            put_dims,
+            round(_uniform(3.75, 1.75), 3),
+            "Milliseconds",
+        )
 
     logger.info("[injector] DynamoDB done")
 
 
 def inject_s3_metrics() -> None:
     for bname, p in S3_PROFILES.items():
-        std_dims = [{"Name": "BucketName", "Value": bname}, {"Name": "StorageType", "Value": "StandardStorage"}]
-        all_dims = [{"Name": "BucketName", "Value": bname}, {"Name": "StorageType", "Value": "AllStorageTypes"}]
+        std_dims = [
+            {"Name": "BucketName", "Value": bname},
+            {"Name": "StorageType", "Value": "StandardStorage"},
+        ]
+        all_dims = [
+            {"Name": "BucketName", "Value": bname},
+            {"Name": "StorageType", "Value": "AllStorageTypes"},
+        ]
         req_dims = [{"Name": "BucketName", "Value": bname}]
 
         gets = max(0, round(_uniform(p["gets_base"], p["gets_var"])))
         puts = max(0, round(_uniform(p["puts_base"], p["puts_var"])))
 
-        _put("AWS/S3", "BucketSizeBytes",  std_dims, _uniform(p["size"], p["size"] * 0.01), "Bytes")
-        _put("AWS/S3", "NumberOfObjects",  all_dims, p["object_count"],                      "Count")
-        _put("AWS/S3", "GetRequests",      req_dims, gets,                                   "Count")
-        _put("AWS/S3", "PutRequests",      req_dims, puts,                                   "Count")
-        _put("AWS/S3", "BytesDownloaded",  req_dims, _uniform(p["dl_base"], p["dl_var"]),    "Bytes")
-        _put("AWS/S3", "BytesUploaded",    req_dims, _uniform(p["ul_base"], p["ul_var"]),    "Bytes")
+        _put(
+            "AWS/S3",
+            "BucketSizeBytes",
+            std_dims,
+            _uniform(p["size"], p["size"] * 0.01),
+            "Bytes",
+        )
+        _put("AWS/S3", "NumberOfObjects", all_dims, p["object_count"], "Count")
+        _put("AWS/S3", "GetRequests", req_dims, gets, "Count")
+        _put("AWS/S3", "PutRequests", req_dims, puts, "Count")
+        _put("AWS/S3", "BytesDownloaded", req_dims, _uniform(p["dl_base"], p["dl_var"]), "Bytes")
+        _put("AWS/S3", "BytesUploaded", req_dims, _uniform(p["ul_base"], p["ul_var"]), "Bytes")
 
     logger.info("[injector] S3 done")
 
 
-def inject_all_metrics(**kwargs) -> None:
+def inject_all_metrics() -> None:
     logger.info("[injector] Injecting datapoint...")
     inject_ec2_metrics()
     inject_dynamodb_metrics()
